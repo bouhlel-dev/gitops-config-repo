@@ -1,0 +1,15 @@
+# Windows clones default to core.autocrlf, which would rewrite these files to
+# CRLF and break every shell script and manifest the pipeline reads.
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.env text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
