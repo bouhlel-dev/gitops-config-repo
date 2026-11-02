@@ -157,8 +157,16 @@ canary_weight() {
 }
 
 abort_reason() {
+  # Not a "RolloutAborted" condition: that type is not what Rollouts 1.10
+  # writes. An aborted rollout is a Degraded one, and this is the string that
+  # names the metric that failed -- printed empty the first time the demo read
+  # a path that does not exist.
   kubectl -n "$1" get rollout "$ROLLOUT_NAME" \
-    -o 'jsonpath={.status.conditions[?(@.type=="RolloutAborted")].message}' 2>/dev/null || true
+    -o 'jsonpath={.status.conditions[?(@.type=="Degraded")].reason}{" :: "}{.status.conditions[?(@.type=="Degraded")].message}' 2>/dev/null || true
+}
+
+analysis_message() { # AnalysisRun NAMESPACE RUN -- the controller's own sentence
+  kubectl -n "$1" get analysisrun "$2" -o 'jsonpath={.status.message}' 2>/dev/null || true
 }
 
 promote() { # answer the manual pause at 10% weight

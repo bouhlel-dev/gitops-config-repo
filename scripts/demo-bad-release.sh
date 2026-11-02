@@ -81,6 +81,7 @@ log "phase=$(rollout_phase "$DEV_NAMESPACE")  reason=$(abort_reason "$DEV_NAMESP
 run="$(latest_analysis_run "$DEV_NAMESPACE")"
 log "AnalysisRun $run:"
 analysis_detail "$DEV_NAMESPACE" "$run"
+printf '  the run'"'"'s own verdict: %s\n' "$(analysis_message "$DEV_NAMESPACE" "$run")"
 echo "  the two pod-template hashes the split was between:"
 kubectl -n "$DEV_NAMESPACE" get rollout "$ROLLOUT_NAME" \
   -o 'jsonpath={.status.canary.weights}{"\n"}' | sed 's/^/    /'
