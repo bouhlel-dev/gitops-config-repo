@@ -4,11 +4,11 @@ kind: Kustomization
 # The base is never applied on its own: it has no namespace, no host and no
 # ConfigMap. Argo CD points at overlays/dev and overlays/prod.
 resources:
-  - rollout.yaml
-  - services.yaml
-  - ingress.yaml
-  - servicemonitor.yaml
-  - analysistemplate.yaml
+- rollout.yaml
+- services.yaml
+- ingress.yaml
+- servicemonitor.yaml
+- analysistemplate.yaml
 
 # The single line app-repo CI rewrites on every release:
 #   kustomize edit set image ghcr.io/<owner>/gitops-demo:<git sha>
@@ -20,5 +20,5 @@ resources:
 # GitHub account: app-repo CI pushes to ghcr.io/<owner>/gitops-demo and then
 # rewrites the newTag below.
 images:
-  - name: ghcr.io/bouhlel-dev/gitops-demo
-    newTag: placeholder
+- name: ghcr.io/bouhlel-dev/gitops-demo
+  newTag: 59f472e
