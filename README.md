@@ -54,10 +54,10 @@ bash scripts/bootstrap.sh --supply-chain
 ```
 
 `--supply-chain` is the bonus: it adds Kyverno's admission webhook and applies
-the ClusterPolicy that refuses a Pod whose image was not signed by this
-pipeline. It is a flag and not the default because the policy is `Enforce`, and
-applying it while an unsigned tag is the one being rolled out stops that rollout
-mid-canary. See [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md).
+the `ImageValidatingPolicy` that refuses a Pod whose image was not signed by
+this pipeline. It is a flag and not the default because the policy denies at
+admission, and applying it while an unsigned tag is the one being rolled out
+stops that rollout mid-canary. See [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md).
 
 ### Verify it worked
 
@@ -87,7 +87,7 @@ bootstrap/kind/                 the kind cluster config (port mappings)
 bootstrap/helm/                 values for ingress-nginx, the monitoring stack,
                                 and Kyverno
 bootstrap/argocd/applications/  the two Application objects
-bootstrap/kyverno/              the ClusterPolicy that refuses an unsigned image
+bootstrap/kyverno/              the ImageValidatingPolicy that refuses an unsigned image
 scripts/bootstrap.sh            the one command
 scripts/install-tools.sh        the pinned toolchain
 scripts/loadgen.py              the traffic the analysis is measured on
@@ -171,12 +171,13 @@ No plaintext secret exists in either repository.
 The PAT is scoped to one repository and two permissions. Rotating it is a
 `gh secret set` and a delete in GitHub settings; nothing in git changes.
 
-## The three demos
+## The four demos
 
 ```bash
 bash scripts/demo-good-release.sh    # a release nothing objects to: commit -> 100%
 bash scripts/demo-bad-release.sh     # a 600 ms regression CI cannot see; the p95 aborts it
 bash scripts/demo-drift.sh           # one kubectl patch, reverted by reconciliation
+bash scripts/demo-supply-chain.sh    # an unsigned image cannot start; the signed one can
 ```
 
 Each is a real release: they commit to app-repo and let the pipeline run. The
@@ -241,8 +242,14 @@ is the p95 of one canary pod.
   version them apart, and the trade-off is a longer release train.
 - The demo service has no database, so this project says nothing about migration
   orchestration, which is where GitOps usually gets hard.
-- CI signs nothing unless the Cosign/Kyverno step is enabled — see
-  `docs/ARCHITECTURE.md`.
+- CI signs every image it publishes, but **nothing checks that signature unless
+  `bootstrap.sh --supply-chain` has run**, and even then only at admission in
+  the two app namespaces. The transparency log is part of the check — Rekor is
+  what makes "this certificate was issued for that identity on that date"
+  verifiable rather than merely plausible — but there is no SBOM and no SLSA
+  provenance, so the certificate says "this workflow, this ref", not "this build
+  is reproducible". `docs/SUPPLY_CHAIN.md` states where that line is, and why the
+  policy is not a `ClusterPolicy`.
 
 ## Troubleshooting
 

@@ -4,7 +4,7 @@ Written so that every claim survives being asked "how did you measure that?".
 Numbers are from real runs on this cluster; the command that produces each one is
 listed, so nothing here is a figure that cannot be re-derived in an interview.
 
-## Long version (project block, 5 bullets)
+## Long version (project block, 6 bullets)
 
 **GitOps CI/CD pipeline with metric-driven canary analysis and automatic
 rollback** — Kubernetes (kind, v1.34.11), Argo CD v3.5.6, Argo Rollouts v1.10.1,
@@ -30,10 +30,19 @@ Trivy, Python/FastAPI.
   applied server-side, Rollouts CRDs waited on as `Established` before the first
   sync, and reconciliation tuned for live demonstration (measured drift reversion
   in 3 s via `selfHeal`).
-- Pinned 12 tool and chart versions plus 10 infrastructure images with 12 sha256
-  checksums in one `versions.env` consumed by both the local scripts and CI, and
-  instrumented the four DORA keys from git history and `AnalysisRun` timestamps
-  (`dora.py`) rather than from a dashboard screenshot.
+- Pinned every tool, chart, image and install manifest in one `versions.env` —
+  versions plus sha256 digests for both the laptop (Windows) and CI (Linux),
+  consumed by the local scripts and the workflow alike — and instrumented the
+  four DORA keys from git history and `AnalysisRun` timestamps (`dora.py`) rather
+  than from a dashboard screenshot.
+- Added an admission-time supply-chain control: CI signs each pushed **digest**
+  keyless with cosign (Fulcio certificate issued from the runner's GitHub OIDC
+  token, subject pinned to `repo:workflow-file:ref`, so no signing key exists to
+  leak or rotate), reads the signature back with the same issuer + subject the
+  cluster uses, and a Kyverno `ImageValidatingPolicy` in `Deny` mode with
+  `failurePolicy: Fail` refuses any Pod in the two app namespaces whose image
+  carries no such signature — demonstrated by applying one manifest twice, the
+  unsigned tag denied at admission and the signed one reaching `Ready`.
 
 ## Short version (2 bullets, for a crowded page)
 
@@ -95,15 +104,51 @@ prop: 20 rps per environment, roughly 34 000 requests behind a single release. A
 canary with no requests returns no data and the gate fails the release for the
 wrong reason.
 
+**"Your signature proves who built the image. Suppose the build itself lied?"**
+Then the signature is valid and the image is still whatever the workflow produced
+— keyless answers *who*, not *what*. Closing that needs SLSA provenance or an
+attested build pipeline plus a policy that reads the attestation, and here
+`mutateDigest: false` leaves one more window open: verification runs against
+whatever the tag resolves to at admission, so pinning the verified digest into
+the pod spec is the stronger setting I deliberately did not take, because it
+breaks the property that a running pod's image string matches what git says.
+
+**"Why is the admission policy `Deny` with `failurePolicy: Fail`?"**
+`Audit` writes a report and lets the pod run, which proves nothing. `Fail` is
+the safe direction for a control, and the reason its match is two namespaces
+instead of the cluster: with `Fail` and a dead webhook, a cluster-wide policy
+prevents the control plane from rescheduling its own pods. The scope is the
+trade-off, and it is a limitation as much as a feature — a pod outside those two
+namespaces is unchecked. One more number belongs to that answer: the webhook
+timeout is 30 s, the maximum, because verifying a tag means resolving it at GHCR
+and then reading a Rekor entry, and on a cold cache that does not fit in the 10 s
+default — a timed-out webhook is a denied pod for an image that verifies
+perfectly.
+
 **"What broke while building this?"**
-Four things worth naming: `helm --wait` failing on `progressDeadlineSeconds`
+Seven things worth naming: `helm --wait` failing on `progressDeadlineSeconds`
 during slow pulls rather than on anything wrong with the chart; Argo CD's install
 manifest wiring `ARGOCD_RECONCILIATION_TIMEOUT` to a different ConfigMap than the
 documentation implies (measured 5 m 21 s of dead time before the fix); selfHeal
 fighting Argo Rollouts over rewritten Service selectors until
-`ignoreDifferences` was added; and a `git push` from CI being answered with
+`ignoreDifferences` was added; a `git push` from CI being answered with
 `403 denied to github-actions[bot]` because the runner's `GIT_ASKPASS` outranks
-everything unless the token is installed by the checkout step.
+everything unless the token is installed by the checkout step; and a Kyverno
+readiness check that never passed because the chart names its Deployment
+`kyverno-admission-controller` but its Service `kyverno-svc` — the endpoint
+existed the whole time, the label selector was looking for a Service that does
+not. The last two are the ones I would tell an interviewer about. Kyverno 1.10
+denied every pod, signed images included, and its own log said `initializing tuf:
+invalid key`: the version pinned for the chart still bootstrapped keyless trust
+from a Sigstore root that has since been retired, so a stale pin was a silent
+security failure rather than an old feature set. And after fixing that, the
+policy still refused an image that `cosign verify` accepted on the same laptop —
+cosign v3 publishes a signature as an OCI 1.1 referrer, GitHub's registry does
+not implement the Referrers API, so cosign falls back to a tag named
+`sha256-<digest>` in the same repository; the older `ClusterPolicy` API reads the
+pre-v3 nested `.sig` repository and finds nothing, while the newer
+`ImageValidatingPolicy` follows the fallback tag. Both symptoms looked like
+signature problems; neither was a signature.
 
 ## Where each number came from
 
@@ -114,5 +159,9 @@ everything unless the token is installed by the checkout step.
 | canary walk 4 m 34 s | timestamps in `kubectl -n gitops-demo-dev get analysisruns` |
 | drift reverted in 3 s | `bash scripts/demo-drift.sh` |
 | CI ~90 s warm | `gh run view <id>` |
-| 12 version pins, 10 images | `grep -c _SHA256 versions.env` |
+| 14 tool digests, 13 pinned images | `grep -c _SHA256 versions.env`, `grep -cE '^  [a-z0-9.-]+/' versions.env` |
 | ~34 000 requests per release | `scripts/loadgen.py` final summary |
+| every published image is signed | `gh run view --repo bouhlel-dev/gitops-app-repo --log \| grep "Pushing signature"` |
+| an unsigned image cannot be scheduled | `bash scripts/demo-supply-chain.sh` (one Pod manifest, applied twice) |
+| the signature verifies against one identity | step 2 of `bash scripts/demo-supply-chain.sh` — cosign's exit code against the pinned issuer + subject regexp, and against a deliberately wrong ref |
+| Kyverno installs in ~4 min including both image pulls | `bash scripts/bootstrap.sh --supply-chain` |

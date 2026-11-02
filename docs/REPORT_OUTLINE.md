@@ -98,7 +98,11 @@ command.
 | Hand-patched ConfigMap → reverted | 3 s | `scripts/demo-drift.sh` |
 | Faulty release → abort | 277 s from push to abort. The gate's first p95 sample read 0.886 s against the 0.5 s threshold and `failureLimit: 0` ended the run on the spot; the success rate stayed at 1.00 all the way through, because the fault was latency and not errors | `bash scripts/demo-bad-release.sh` |
 | Faulty release → healthy again | 9 m 48 s from the abort to the corrected release finishing its canary at 100%; 864 s from pushing the revert to both apps Healthy | `python scripts/dora.py --days 1` |
-| DORA, this window | 5 releases, lead time median 81 s, 1 of 12 analysis runs Failed, gap between releases median 8 m 50 s | `python scripts/dora.py --days 1` |
+| DORA, this window | 6 releases, lead time median 81 s (p90 83 s), 1 of 11 analysis runs Failed, gap between releases median 21 m 54 s | `python scripts/dora.py --days 1` |
+| Every published image signed, keyless, by one identity | CI signs the digest it pushed with a Fulcio certificate whose subject is the workflow file and ref; the same issuer + subject is read back locally | `gh run view --repo bouhlel-dev/gitops-app-repo --log \| grep -E "Pushing signature"` |
+| Unsigned image → refused at admission | the CREATE call comes back denied in ~6 s: `admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-…" denied the request`. Kubelet is never involved | `bash scripts/demo-supply-chain.sh` (one Pod manifest, applied twice) |
+| Signed image → admitted and running | same manifest, different tag: 4.7 s to admit, 6.4 s to `Ready` | same script, step 5 |
+| What the check does *not* catch | `kubectl set image pod/… app=<unsigned tag>` on a running Pod is an UPDATE, the policy matches CREATE, and the API server accepted it | measured in `docs/SUPPLY_CHAIN.md`, "What this catches, in time order" |
 
 The centre of gravity of this section is the bad release: ruff passes, pytest
 passes (28 tests, none measures a duration), the build succeeds, Trivy reports
@@ -158,7 +162,7 @@ cited from `versions.env` rather than from a moving doc.
 
 ## Appendix A — Reproduction
 
-`scripts/install-tools.sh`, `bash scripts/bootstrap.sh`, the three demo scripts,
+`scripts/install-tools.sh`, `bash scripts/bootstrap.sh`, the four demo scripts,
 exact verify commands, expected output, and the four things that go wrong on a
 fresh machine (host ports taken, slow pulls, the reconciliation ConfigMap, PAT
 scope).
@@ -171,5 +175,7 @@ than from a re-download.
 
 ## Appendix C — Artifacts
 
-Two commit pairs: the faulty release (`ac68d20`) and the automatic abort; the
-drift patch and its reversion. `git log` plus the corresponding AnalysisRun JSON.
+Two commit pairs: the faulty release (`9a0526d`) and its revert (`dda102f`), with
+the AnalysisRun that ended the canary (`gitops-demo-69f5cccdd6-4-4`, Failed); the
+drift patch and the sync that reverted it, from the Application's own
+`operationState`. `git log` plus the corresponding AnalysisRun JSON.

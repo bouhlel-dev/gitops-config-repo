@@ -38,10 +38,17 @@ flowchart LR
         GR["Grafana"]
         APP1["gitops-demo-dev  10 pods"]
         APP2["gitops-demo-prod 20 pods"]
+        KY["Kyverno v1.19.2 admission webhook<br/>ImageValidatingPolicy, Deny<br/>optional: bootstrap.sh --supply-chain"]
+    end
+
+    subgraph SG["Sigstore"]
+        F["Fulcio<br/>short-lived cert from the runner's OIDC token"]
+        RK[("Rekor<br/>transparency log")]
     end
 
     A -->|push main| W
     W -->|buildx push| R
+    W -->|cosign sign the pushed digest| F
     W -->|kustomize edit set image<br/>PR + squash merge| K
     S-.->W
     B -->|helm / kubectl apply| CL
@@ -59,11 +66,20 @@ flowchart LR
     PR --> GR
     R -->|image pull| APP1
     R -->|image pull| APP2
+    KY -->|signature lookup at CREATE| R
+    KY -->|log entry lookup| RK
+    KY -.->|unsigned pod denied at admission| APP1
 ```
 
 What is missing from that diagram is the point: **nothing between a commit and a
 running pod is a human**, and **nothing that writes to the cluster is CI**. The
 only path into the cluster is a merged commit in config-repo.
+
+The Sigstore box and the three Kyverno edges are the optional phase: CI signs
+every push whether or not the cluster was bootstrapped with `--supply-chain`, but
+without it the signature is written and never read. `docs/SUPPLY_CHAIN.md` is the
+write-up of that half, including why the reader is an `ImageValidatingPolicy` and
+not the `ClusterPolicy` most examples use.
 
 ## A release, step by step
 
@@ -113,6 +129,10 @@ From real runs on this cluster, not from documentation.
 | Success rate on a healthy canary | **1.00** | threshold is 0.99 |
 | Load generated during one release | **~34 000 requests** at 20 rps per environment | transport errors: 26 of 34 013 |
 | Hand-patched ConfigMap → reverted by selfHeal | **3 s** | one reconciliation cycle |
+| Signature written by CI → read back on the laptop | **~7 s** per `cosign verify` | same issuer + subject the cluster uses |
+| Unsigned Pod → denied at admission | **~6 s** for the CREATE call to come back denied | `bash scripts/demo-supply-chain.sh` step 4 |
+| Signed Pod → admitted, then `Ready` | **4.7 s** to admit, **6.4 s** to `Ready` | same script, step 5 |
+| `bootstrap.sh --supply-chain`, warm re-run of every phase | **7 m 3 s**, exit 0 | re-running the script against the live cluster |
 
 ## Component inventory and why each one is there
 
@@ -125,6 +145,8 @@ From real runs on this cluster, not from documentation.
 | Argo Rollouts | v1.10.1 | progressive delivery + abort/rollback | Argo CD would replace all 30 pods at once |
 | Kustomize | v5.8.3 | base + two overlays | Helm would do it with more machinery for a three-value diff |
 | Trivy | v0.76.1 | blocks the *push*, not merely the deploy | a vulnerable layer becomes pullable, and something pulls it |
+| cosign | v3.1.4 | keyless signing of the pushed digest, in CI | the image carries no evidence of which workflow produced it |
+| Kyverno | chart 3.9.2 / app v1.19.2, optional (`--supply-chain`) | reads that signature at admission and denies without it | CI still signs, and nothing anywhere checks |
 | GitHub Actions | runner `ubuntu-24.04` | the only thing that writes an image | a laptop becomes the build server |
 
 ## Boundaries and who may cross them
@@ -193,8 +215,25 @@ a resolved `configMapKeyRef`.
 
 ## Supply chain (Cosign + Kyverno)
 
-See `SUPPLY_CHAIN.md` for the signature step, the verification command and the
-in-cluster admission policy that refuses an image nobody signed.
+An optional second half of the pipeline, behind `bootstrap.sh --supply-chain`.
+CI signs the pushed **digest** keyless — the runner's GitHub OIDC token becomes a
+Fulcio certificate whose subject is `…/gitops-app-repo/.github/workflows/ci.yml@refs/heads/main`,
+and no signing key exists anywhere — then reads the signature back with the same
+two strings the cluster will use, so a signature the registry will not serve
+stops the build instead of stopping a pod. On the other side, one Kyverno
+`ImageValidatingPolicy` in `Deny` mode matches `Pod` creates in the two app
+namespaces and refuses any image that does not carry that signature. It is not
+the `ClusterPolicy` shape most write-ups use: cosign v3 publishes to a location
+the older API cannot see, and `docs/SUPPLY_CHAIN.md` walks through what that
+looked like and how it was diagnosed.
+
+| | |
+|---|---|
+| What it stops | a Pod asking for an image this pipeline did not build, in these two namespaces |
+| What it does not stop | a build that lied about what it built — the certificate answers *who*, not *what* |
+| Cost accepted | `failurePolicy: Fail` means a dead webhook blocks pod creation, which is why the match is two namespaces and not the cluster |
+
+Full walkthrough, pins, and the limits: `docs/SUPPLY_CHAIN.md`.
 
 ## What this design is not
 
