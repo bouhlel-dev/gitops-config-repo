@@ -21,4 +21,4 @@ resources:
 # rewrites the newTag below.
 images:
 - name: ghcr.io/bouhlel-dev/gitops-demo
-  newTag: 59f472e
+  newTag: 370b136
