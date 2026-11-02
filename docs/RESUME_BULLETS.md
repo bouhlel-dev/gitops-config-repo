@@ -104,6 +104,20 @@ prop: 20 rps per environment, roughly 34 000 requests behind a single release. A
 canary with no requests returns no data and the gate fails the release for the
 wrong reason.
 
+**"What were your DORA numbers?"**
+Two answers, and the second is the one that shows the work. In the window with
+every release in it: 8 releases, lead time median 82 s from commit-authored to
+release-PR-merged, one failed canary in eleven, and the gate deciding in 0 s
+because `failureLimit: 0` ends the run on its first bad sample. The restore
+figure is where I would rather not be impressive: the script prints `4 h 14 m`,
+which is wrong. It pairs the abort with the next surviving `Successful`
+AnalysisRun, and Rollouts had already pruned the revert's runs with the revision,
+so the next one belonged to a release made four hours later. While those runs
+were still in the cluster the same command printed 9 m 48 s. Now `dora.py` warns
+when the gap passes half an hour, because a metric read off garbage-collected
+objects expires silently — and `864 s`, printed by the demo script's own clock on
+the run that made the abort, is the number I would quote.
+
 **"Your signature proves who built the image. Suppose the build itself lied?"**
 Then the signature is valid and the image is still whatever the workflow produced
 — keyless answers *who*, not *what*. Closing that needs SLSA provenance or an
@@ -156,7 +170,7 @@ signature problems; neither was a signature.
 |---|---|
 | 28 tests, all green | `pytest -q` |
 | p95 4.75 ms, success rate 1.00 | `kubectl -n gitops-demo-dev get analysisrun <name> -o json` |
-| canary walk 4 m 34 s | timestamps in `kubectl -n gitops-demo-dev get analysisruns` |
+| canary walk 4 m 42 s | `kubectl get analysisruns --all-namespaces -o custom-columns=NAME:.metadata.name,STARTED:.status.startedAt,FINISHED:.status.completedAt` |
 | drift reverted in 3 s | `bash scripts/demo-drift.sh` |
 | CI ~90 s warm | `gh run view <id>` |
 | 14 tool digests, 13 pinned images | `grep -c _SHA256 versions.env`, `grep -cE '^  [a-z0-9.-]+/' versions.env` |

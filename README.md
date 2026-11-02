@@ -181,9 +181,9 @@ bash scripts/demo-supply-chain.sh    # an unsigned image cannot start; the signe
 ```
 
 Each is a real release: they commit to app-repo and let the pipeline run. The
-good one takes about ten minutes, the bad one about twenty because it ships the
-fault *and* the fix. `docs/DEMO.md` is the narrated walkthrough with the output
-each step produces.
+good one took 729 s (twelve minutes), the bad one 864 s end to end because it
+ships the fault *and* the fix. `docs/DEMO.md` is the narrated walkthrough with the
+output each step produces.
 
 `demo-bad-release.sh` is the interesting one, and it is interesting because of
 what does **not** happen: ruff says nothing, pytest passes (28 tests, none of

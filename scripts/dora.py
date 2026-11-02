@@ -56,6 +56,9 @@ from typing import NoReturn
 
 RELEASE_TITLE = re.compile(r"^release: gitops-demo ([0-9a-f]{7,40})$")
 FAILED_PHASES = ("Failed", "Error")
+# A restore that takes longer than this is not a restore: it is the corrected-
+# release pairing below reaching past the runs Rollouts still keeps.
+RETAIN_SKEW = 30 * 60
 # <rollout>-<pod-template-hash>-<step index>-<sample index>, the shape Rollouts
 # gives every AnalysisRun. The hash is what identifies one release of one
 # namespace, which is the unit the restore numbers need.
@@ -239,8 +242,16 @@ def report(app_repo: str, config_repo: str, days: float) -> None:
             next_hash = min(later, key=lambda other: other["finished"])["hash"]
             corrected = [other for other in later if other["hash"] == next_hash]
             last = max(corrected, key=lambda other: other["finished"])
-            print(f"  corrected release: {duration((last['finished'] - analysis['started']).total_seconds())} "
+            gap = (last["finished"] - analysis["started"]).total_seconds()
+            print(f"  corrected release: {duration(gap)} "
                   f"(abort -> {last['namespace']}/{last['name']} done, i.e. back at 100%)")
+            # Rollouts deletes AnalysisRuns with the revision they belong to, so
+            # the run that actually restored the service ages out and this pairs
+            # the abort with whatever later success is still in the cluster. A
+            # gap of hours is that, not a slow restore: check before quoting it.
+            if gap > RETAIN_SKEW:
+                print(f"      (over {RETAIN_SKEW // 60} minutes: Rollouts had pruned the "
+                      f"nearer runs -- `kubectl get analysisruns` before quoting this)")
     else:
         print("  no failed canary in the window, so nothing had to be restored")
     print()

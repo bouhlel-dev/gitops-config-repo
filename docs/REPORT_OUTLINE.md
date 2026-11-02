@@ -90,15 +90,17 @@ command.
 |---|---|---|
 | CI, commit → image published + promotion merged | ~90 s warm, ~4 min cold | `gh run view <id>` |
 | Merged config-repo commit → Argo CD acts | 5 m 21 s with the wrong ConfigMap patched; seconds after the fix | `bootstrap.sh` report line |
-| Full canary, promoted at 10% → Healthy at 100% | 4 m 34 s | `kubectl argo rollouts get rollout -w` |
+| Full canary, promoted at 10% → Healthy at 100% | 4 m 42 s | `kubectl get analysisruns --all-namespaces -o custom-columns=NAME:.metadata.name,STARTED:.status.startedAt,FINISHED:.status.completedAt` |
+| Whole good release, push → both namespaces Healthy | 729 s, two human promotes inside it | `bash scripts/demo-good-release.sh` |
 | Gate samples per stage | 4 at 15 s, `failureLimit: 0` | `kubectl get analysisrun -o json` |
 | p95 on a healthy canary | 0.00475 s against a 0.5 s threshold | `analysis_detail` in `demo-lib.sh` |
 | Success rate on a healthy canary | 1.00 against a 0.99 threshold | same |
 | Traffic behind one release | ~34 000 requests, 26 transport errors | `scripts/loadgen.py` summary |
 | Hand-patched ConfigMap → reverted | 3 s | `scripts/demo-drift.sh` |
 | Faulty release → abort | 277 s from push to abort. The gate's first p95 sample read 0.886 s against the 0.5 s threshold and `failureLimit: 0` ended the run on the spot; the success rate stayed at 1.00 all the way through, because the fault was latency and not errors | `bash scripts/demo-bad-release.sh` |
-| Faulty release → healthy again | 9 m 48 s from the abort to the corrected release finishing its canary at 100%; 864 s from pushing the revert to both apps Healthy | `python scripts/dora.py --days 1` |
-| DORA, this window | 6 releases, lead time median 81 s (p90 83 s), 1 of 11 analysis runs Failed, gap between releases median 21 m 54 s | `python scripts/dora.py --days 1` |
+| Faulty release → healthy again | 864 s for the whole scripted run, from pushing the fault to both apps Healthy on the revert; the abort is 277 s into it. Traffic lost to the bad version was 30 % of the canary, and the stable pods never left service | `bash scripts/demo-bad-release.sh` |
+| Why `dora.py`'s restore line needs reading | It pairs the abort with the next surviving `Successful` run of a different pod-template hash. While the revert's runs were retained that was 9 m 48 s; Rollouts has since pruned them with the revision, so it now prints 4 h 14 m and points at an unrelated release four hours later -- and says so, on the line under it. A metric built from garbage-collected objects has an expiry date | `python scripts/dora.py --days 1`, then the `kubectl get analysisruns` command above |
+| DORA, this window | 8 releases, lead time median 82 s (p90 1 m 30 s), 1 of 11 analysis runs Failed, gap between releases median 22 m 42 s | `python scripts/dora.py --days 1` |
 | Every published image signed, keyless, by one identity | CI signs the digest it pushed with a Fulcio certificate whose subject is the workflow file and ref; the same issuer + subject is read back locally | `gh run view --repo bouhlel-dev/gitops-app-repo --log \| grep -E "Pushing signature"` |
 | Unsigned image → refused at admission | the CREATE call comes back denied in ~6 s: `admission webhook "ivpol.validate.kyverno.svc-fail-finegrained-…" denied the request`. Kubelet is never involved | `bash scripts/demo-supply-chain.sh` (one Pod manifest, applied twice) |
 | Signed image → admitted and running | same manifest, different tag: 4.7 s to admit, 6.4 s to `Ready` | same script, step 5 |

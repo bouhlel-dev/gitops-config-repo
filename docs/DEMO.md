@@ -77,61 +77,96 @@ What the script prints, and what each part means:
 
 ```
 [1] what is live right now
-  gitops-demo-dev      ghcr.io/bouhlel-dev/gitops-demo:370b136
-  gitops-demo-prod     ghcr.io/bouhlel-dev/gitops-demo:370b136
+  gitops-demo-dev    ghcr.io/bouhlel-dev/gitops-demo:61627bf
+  gitops-demo-prod   ghcr.io/bouhlel-dev/gitops-demo:61627bf
 ==> note the tag: it is a commit from app-repo, not a build number
 
 [2] generating the traffic the canary will be measured on
-==> traffic -> all: 20 rps for 1200s (pid 6370)
+==> traffic -> all: 20 rps for 1200s (pid 12650)
+  a sample request through the ingress:
+    {"service":"gitops-demo","version":"61627bf","environment":"dev", … }
 
 [3] a change worth reviewing, and nothing else
+==> pushed 0542eb1 to bouhlel-dev/gitops-app-repo
 
 [4] CI: lint, test, build, scan, publish, promote
-==> CI run 41479106611
-==> CI green: ghcr.io/bouhlel-dev/gitops-demo:c4b0700 published,
+==> CI run 41523662335
+==> CI green: ghcr.io/bouhlel-dev/gitops-demo:0542eb1 published,
     promotion merged into bouhlel-dev/gitops-config-repo
 
 [5] Argo CD picks it up (reconciles every 20s)
 
-[6] canary at 10%, paused for a human
+[6] canary at 10%, paused for a human -- in both environments
 ==> gitops-demo-dev is serving 10% of traffic (Paused)
+  one pod of ten carries the new version:
+    NEW gitops-demo-f4668d66d-rwbwc
+    old gitops-demo-f95f867d7-554wc
+    … nine more old
 ==> promoted (the human decision in gitops-demo-dev)
+==> gitops-demo-prod is serving 10% of traffic (Paused)
+  two pods of twenty carry it there:
+    NEW gitops-demo-7b579b9d75-stn9k
+    NEW gitops-demo-7b579b9d75-v7skh
+    … twenty old
+==> promoted (the human decision in gitops-demo-prod)
 
 [7] 30% -> 60% -> 100%, each gate measured
 ==>   weight=10% phase=Progressing
 ==>   weight=30% phase=Paused
 ==>   weight=60% phase=Paused
+==>   weight=0% phase=Missing
+==>   weight=60% phase=Progressing
 ==>   weight=100% phase=Paused
 ==>   weight=0% phase=Healthy
+
+[8] every pod in both environments runs the new image
+  gitops-demo-dev    10 of 10 pods on :0542eb1
+  gitops-demo-prod   20 of 40 pods on :0542eb1
+  gitops-demo-69f5cccdd6-4-4                     Failed
+  gitops-demo-f4668d66d-8-10                     Successful
+  gitops-demo-f4668d66d-8-4                      Successful
+  gitops-demo-f4668d66d-8-7                      Successful
+  gitops-demo-f95f867d7-7-10                     Successful
+  gitops-demo-f95f867d7-7-7                      Successful
+
+==> good release delivered in 729s: commit -> image -> PR -> sync -> canary -> 100%
+==> release 0542eb1 is live in both namespaces, and no one typed kubectl apply
 ```
 
-Step 1 prints the image each namespace is running, read from the Rollout's own
-pod template rather than from a pod name — names carry the pod-template hash,
-which changes even when the tag does not.
+Step 1 prints the image each namespace is running, read from the Rollout's own pod
+template rather than from a pod name — names carry the pod-template hash, which
+changes even when the tag does not.
 
-The `weight=0%` on the last line is not a regression: at 100% the canary is no
+Step 6 is two pauses, not one. The indefinite `pause: {}` is defined once, in
+`base/rollout.yaml`, so dev and prod both stop at 10 % and both need a person:
+one pod of ten in dev, two of twenty in prod. The script answers both, which is
+the whole of the human's role in this pipeline.
+
+The `weight=0% phase=Missing` line in the middle of step 7 is real output, not a
+typo: the watch loop reads `status.canary.currentStepWeight` and `status.phase`
+every couple of seconds, and one of those reads came back empty between the 60 %
+soak and the 60 % gate. The next sample showed 60 % Progressing. It is the shape
+of a live cluster — a controller write landing while you are reading — and the
+line that matters is the last one, `phase=Healthy`.
+
+The `weight=0%` on the final line is not a regression: at 100 % the canary is no
 longer a canary, so the controller reports the *stable* ReplicaSet, which carries
 no weight. `phase=Healthy` is the answer.
 
-```
-[8] every pod in both environments runs the new image
-  gitops-demo-dev    10 of 20 pods on c4b0700
-  gitops-demo-prod   20 of 40 pods on c4b0700
-```
+"20 of 40" in prod is the retired ReplicaSet still winding down while dev has
+already finished; the pods are scaled away a moment later, and the count is a
+snapshot of the walk, not a stuck release. `gitops-demo-69f5cccdd6-4-4 Failed` is
+scenario 2's abort, still in the namespace's history — `kubectl get analysisruns`
+lists every run this cluster has ever made, which is exactly what the DORA script
+counts.
 
-"10 of 20" and "20 of 40" are the old and new ReplicaSets side by side: the
-retired pods are scaled to zero but kept, so a rollback is a `kubectl scale`
-away — except it never has to be, because git already says what to run.
-
-```
-==> release c4b0700 at 100% in both namespaces after 338s
-        335.5s  dev    18.8 rps  p50    6.1ms  p95   20.3ms  {'2xx': 6134}
-        335.5s  prod   19.0 rps  p50    6.1ms  p95   18.4ms  {'2xx': 6142}
-```
-
-**Point at:** the tag. `c4b0700` is a commit in app-repo, it is the image name in
+**Point at:** the tag. `0542eb1` is a commit in app-repo, it is the image name in
 GHCR, and it is the only line CI changed in config-repo. Same seven characters
-in all three places, which is the whole traceability argument in one glance.
+in all three places, which is the whole traceability argument in one glance. And
+with `--supply-chain` installed, thirty new pods each went through the image
+webhook on their way in, at a measured five seconds for the first one
+(`docs/SUPPLY_CHAIN.md`). The canary walked to 100 % anyway: that is the evidence
+the two controls coexist rather than fighting over every release.
 
 ---
 
@@ -368,28 +403,35 @@ is the design working, not the app being broken.
 
 ```
 DORA  bouhlel-dev/gitops-app-repo + bouhlel-dev/gitops-config-repo  last 1 day(s)
-sample: 6 release(s), 11 analysis run(s)
+sample: 8 release(s), 11 analysis run(s)
 
 Deployment frequency
-  6 deployment(s), 6.0/day
-  median gap between releases: 21m 54s
+  8 deployment(s), 8.0/day
+  median gap between releases: 22m 42s
 
 Lead time for changes  (commit authored -> release PR merged)
-  median 81s  p90 83s  max 88s
+  median 82s  p90 1m 30s  max 1m 33s
+    PR #1   59f472e  authored 12:51:34  merged 12:52:55  81s
+    PR #2   370b136  authored 15:49:10  merged 15:50:31  81s
+    PR #3   c4b0700  authored 16:11:56  merged 16:13:13  77s
+    PR #4   9a0526d  authored 16:20:35  merged 16:22:03  88s
+    PR #5   dda102f  authored 16:25:07  merged 16:26:30  83s
+    PR #6   3aae81c  authored 16:47:02  merged 16:48:24  82s
+    PR #7   61627bf  authored 20:27:09  merged 20:28:39  1m 30s
+    PR #8   0542eb1  authored 20:55:36  merged 20:57:09  1m 33s
+  plus at most 20s before Argo CD reconciles the merged commit
 
 Change failure rate  (canaries the quality gate rejected)
-  1 of 11  (9%)  {'Successful': 10, 'Failed': 1}
+  1 of 11  (9%)  {'Failed': 1, 'Successful': 10}
 
 Time to restore
-  gate decides: 0s (ended on its first measurement; stable pods never left
-                   service, maxUnavailable: 0)
-    gitops-demo-dev/gitops-demo-69f5cccdd6-4-4: Metric "p95-latency" assessed
-      Failed due to failed (1) > failureLimit (0)
-  corrected release: 9m 48s (abort -> gitops-demo-dev/gitops-demo-5b99b56b55-5-10
-                             done, i.e. back at 100%)
+  gate decides: 0s (ended on its first measurement; stable pods never left service, maxUnavailable: 0)
+    gitops-demo-dev/gitops-demo-69f5cccdd6-4-4: Metric "p95-latency" assessed Failed due to failed (1) > failureLimit (0)
+  corrected release: 4h 14m (abort -> gitops-demo-dev/gitops-demo-f95f867d7-7-10 done, i.e. back at 100%)
+      (over 30 minutes: Rollouts had pruned the nearer runs -- `kubectl get analysisruns` before quoting this)
 ```
 
-Two caveats to say when presenting these, before anyone asks:
+Three caveats to say when presenting these, before anyone asks:
 
 - **The denominator moves.** Argo Rollouts keeps AnalysisRuns only for the
   retained revisions, so the count drops as releases pile up. "1 of 11" is a
@@ -398,8 +440,35 @@ Two caveats to say when presenting these, before anyone asks:
 - **`0s` is a real reading, not a missing measurement.** `startedAt` and
   `completedAt` are equal on a run that fails its first sample. The service was
   never incomplete because the canary was additive and `maxUnavailable: 0`, so
-  the interesting number is the 9 m 48 s it took a human to push the fix that
-  replaced the desired state.
+  the only restore cost that is not automatic is the human one: deciding on a
+  revert and pushing it. Scenario 2's own clock is the number to quote, because
+  the same run produced both ends of it — `277 s` from pushing the fault to the
+  abort, `864 s` from the start of the script to both apps `Healthy` on the
+  revert. Everything between those two is the fix's own canary walk.
+- **The 4 h 14 m is wrong, and the script says so.** Four hours is not how long
+  the restore took; it is what `dora.py` can still *see*. It defines "corrected
+  release" as the next `Successful` run belonging to a different pod-template hash
+  after the abort. The revert (`dda102f`) finished that walk 9 m 48 s after the
+  abort, and when its runs were still retained the script printed exactly that.
+  Rollouts has since pruned them with the revision, so the first surviving
+  `Successful` run belongs to PR #7 — a release made four hours later, for an
+  unrelated reason:
+
+  ```
+  $ kubectl get analysisruns --all-namespaces -o custom-columns=\
+  NS:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,STARTED:.status.startedAt,FINISHED:.status.completedAt
+  NS                 NAME                          PHASE        STARTED                FINISHED
+  gitops-demo-dev    gitops-demo-69f5cccdd6-4-4    Failed       2026-11-02T16:24:58Z   2026-11-02T16:24:58Z
+  gitops-demo-dev    gitops-demo-f4668d66d-8-10    Successful   2026-11-02T21:05:14Z   2026-11-02T21:05:59Z
+  gitops-demo-dev    gitops-demo-f95f867d7-7-10    Successful   2026-11-02T20:38:18Z   2026-11-02T20:39:03Z
+  ```
+
+  Nothing in that list carries the revert's hash, so the pairing is a retention
+  artifact. The finding is the general one: **a metric derived from garbage-
+  collected cluster objects has an expiry date.** `dora.py` prints the run name it
+  paired, and warns when the gap exceeds half an hour, so a wrong restore number
+  cannot leave the terminal unnoticed -- the line under it in the capture above is
+  the script disagreeing with its own output.
 
 ---
 
@@ -413,7 +482,7 @@ Two caveats to say when presenting these, before anyone asks:
 | `Unable to connect to the server: TLS handshake timeout` | the single API server is saturated | wait and retry; `docker info --format '{{.MemTotal}}'` to check the VM |
 | CI red at `Promote the tag into config-repo`, exit 128 | the PAT lost its scope or the checkout lost its `token:` | `gh secret set CONFIG_REPO_TOKEN --repo bouhlel-dev/gitops-app-repo` |
 
-The demo is long — 10 minutes for a good release, 20 for the bad one because it
-ships the fault *and* the fix — so start the load generator first, and start
-`--watch` terminals before you start the script. Nothing in either demo needs
-you to type during the waits, which is the point.
+The demo is long — 12 minutes for a good release (measured: 729 s), 15 for the bad
+one (864 s) because it ships the fault *and* the fix — so start the load generator
+first, and start `--watch` terminals before you start the script. Nothing in either
+demo needs you to type during the waits, which is the point.

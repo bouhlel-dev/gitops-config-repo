@@ -123,7 +123,9 @@ From real runs on this cluster, not from documentation.
 |---|---|---|
 | CI: commit → image published + PR merged | **~90 s** warm, ~4 min cold | buildx layer cache is the difference |
 | Merged config-repo commit → Argo CD acts on it | **5 m 21 s** before the fix, **~3 s** after | see "the two ConfigMaps" below |
-| Canary 10% (promoted) → Healthy at 100% | **4 m 34 s** | three 30 s soaks + three gates of 4×15 s |
+| Canary 10% (promoted) → Healthy at 100% | **4 m 42 s** | three 30 s soaks + three gates of 4×15 s; dev's first gate started 21:01:17 and its last finished 21:05:59 |
+| Good release: push → both namespaces Healthy at 100% | **729 s** | `bash scripts/demo-good-release.sh`, and it includes the two human promotes |
+| Bad release: push → abort → revert live again | **277 s** to the abort, **864 s** end to end | `bash scripts/demo-bad-release.sh` |
 | One gate: 4 samples | **~49 s** | `interval: 15s`, `count: 4` |
 | p95 measured on a healthy canary | **0.00475 s** (4.75 ms) | threshold is 0.5 s |
 | Success rate on a healthy canary | **1.00** | threshold is 0.99 |
