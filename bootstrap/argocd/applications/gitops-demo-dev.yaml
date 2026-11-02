@@ -1,0 +1,62 @@
+# The dev Application: the object that tells Argo CD "this directory in git is
+# the truth for this namespace". bootstrap.sh applies it once; from then on the
+# only thing that changes an environment is a commit to config-repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitops-demo-dev
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    # The public config-repo over HTTPS: Argo CD needs no credentials for it,
+    # so there is no repository secret anywhere -- not in git, not in the
+    # cluster. Change this if the repo is ever renamed or made private.
+    repoURL: https://github.com/bouhlel-dev/gitops-config-repo.git
+    targetRevision: main
+    path: apps/gitops-demo/overlays/dev
+
+  destination:
+    # The cluster Argo CD runs in. Argo CD registers its own cluster at install
+    # time, so there is no Cluster secret to create.
+    server: https://kubernetes.default.svc
+    namespace: gitops-demo-dev
+
+  syncPolicy:
+    automated:
+      prune: true       # a resource deleted from git is deleted from the cluster
+      selfHeal: true    # a resource edited with kubectl is reverted
+    syncOptions:
+      # The namespace belongs to git too: delete it and the next sync puts it
+      # back. This is also why bootstrap.sh does not create app namespaces.
+      - CreateNamespace=true
+    retry:
+      # The first sync after bootstrap can land before the Rollouts CRDs have
+      # propagated from the API server; a short backoff rides that out instead
+      # of leaving the app in a failed state that needs a human.
+      # `limit` is a sibling of backoff, not a key inside it -- Argo CD 3.x
+      # rejects unknown fields outright, so a wrong shape here is a rejected
+      # Application rather than a typo.
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+
+  ignoreDifferences:
+    # Argo Rollouts owns spec.selector on the two traffic Services: it rewrites
+    # each one to a rollouts-pod-template-hash so stable traffic and canary
+    # traffic are separated. Git still says `app: gitops-demo`, so without these
+    # two entries Argo CD sees drift at every canary step and selfHeal pushes
+    # the selector back -- which would route every request to every pod, canary
+    # included, and quietly break the release you are watching.
+    - group: ""
+      kind: Service
+      name: gitops-demo-canary
+      jsonPointers:
+        - /spec/selector
+    - group: ""
+      kind: Service
+      name: gitops-demo-stable
+      jsonPointers:
+        - /spec/selector

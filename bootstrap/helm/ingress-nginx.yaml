@@ -1,0 +1,40 @@
+# ingress-nginx 4.15.1 -- the chart version is pinned in versions.env, and the
+# chart itself pins the controller image (ingress/controller:v1.15.1) and the
+# certgen image, so pinning the chart pins what runs.
+controller:
+  # One replica: a second controller pod can only land on the same node, so it
+  # would add a port-forward race and no availability.
+  replicaCount: 1
+
+  service:
+    # kind ships no load balancer, so the chart default (LoadBalancer) would
+    # leave the service in <pending> and nothing would ever route.
+    type: NodePort
+    # Ports published on the Docker host by bootstrap/kind/gitops.yaml. They are
+    # inside the legal 30000-32767 node-port range on purpose: asking for
+    # nodePort 80 directly is rejected by the API server.
+    nodePorts:
+      http: 30080
+      https: 30443
+    # Keeps the real client IP in spec.remoteAddr / X-Forwarded-For instead of
+    # the node IP. Safe with one node; on a multi-node cluster Local means a
+    # node without a controller pod stops answering.
+    externalTrafficPolicy: Local
+
+  # Requests only, no memory limit. The controller is the single path every
+  # request in the demo takes -- if the canary analysis is running, nginx is
+  # running -- and an OOMKill here shows up as failed requests, which the
+  # AnalysisRun would then read as a bad release.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 90Mi
+
+  # The validating webhook is what stops a malformed Ingress being accepted. It
+  # needs a job that issues a certificate and the API server has to reach the
+  # controller pod on 443 -- a minute of startup and a way for the install to
+  # hang. The Ingress objects here come out of git and are read in the PR that
+  # changed them, so the webhook is dropped rather than debugged. Delete these
+  # two lines to keep it.
+  admissionWebhooks:
+    enabled: false

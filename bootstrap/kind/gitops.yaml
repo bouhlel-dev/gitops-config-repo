@@ -1,0 +1,29 @@
+# The kind cluster for the demo: one control-plane node, because that is all a
+# single-node Docker Desktop host needs and every extra node is another ~700 MB
+# of VM before a single pod is scheduled.
+#
+# The node image is deliberately NOT set here. bootstrap.sh passes
+# --image "$KIND_NODE_IMAGE" from versions.env, so the Kubernetes version has
+# exactly one home in this repo.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    # How http://gitops-demo.local reaches nginx on a machine with no cloud load
+    # balancer: ingress-nginx is installed as a NodePort service on 30080/30443
+    # (see helm/ingress-nginx.yaml), and kind publishes those node ports as the
+    # Docker host's 80/443. Docker Desktop forwards both to localhost.
+    #
+    # A LoadBalancer service would not work here: kind ships no load-balancer
+    # implementation, so it would sit in <pending> forever.
+    #
+    # If something else on this machine already owns 80/443, change hostPort
+    # here and the nodePorts in helm/ingress-nginx.yaml together; containerPort
+    # and nodePort must keep matching each other.
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 30443
+        hostPort: 443
+        protocol: TCP

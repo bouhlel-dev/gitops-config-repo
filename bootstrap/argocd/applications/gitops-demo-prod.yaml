@@ -1,0 +1,43 @@
+# The prod Application. Same shape as gitops-demo-dev.yaml -- read that file for
+# why each field is set; the differences are namespace, path and the two Service
+# selector exceptions the Rollouts controller needs in every environment.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitops-demo-prod
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/bouhlel-dev/gitops-config-repo.git
+    targetRevision: main
+    path: apps/gitops-demo/overlays/prod
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gitops-demo-prod
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+
+  ignoreDifferences:
+    - group: ""
+      kind: Service
+      name: gitops-demo-canary
+      jsonPointers:
+        - /spec/selector
+    - group: ""
+      kind: Service
+      name: gitops-demo-stable
+      jsonPointers:
+        - /spec/selector

@@ -1,0 +1,76 @@
+# kube-prometheus-stack 92.17.0 (prometheus-operator v0.94.2 / Prometheus
+# v3.x -- the chart version pins every image in the stack).
+#
+# Trimmed for one Docker Desktop VM: everything the canary analysis does not
+# read is switched off. What must stay up is Prometheus itself, the operator
+# that turns a ServiceMonitor into scrape configuration, and Grafana to look at
+# the result.
+alertmanager:
+  # Nothing in this project pages anyone: a bad release is not alerted on, it is
+  # aborted by the AnalysisRun. Alerts would need an Alertmanager, a receiver
+  # and someone to read them.
+  enabled: false
+
+nodeExporter:
+  # Host-level metrics. The analysis compares HTTP success rate and p95 per pod.
+  enabled: false
+
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+  # These four scrape control-plane components that kind runs as static pods
+  # without the Service/endpoints and certificates the chart's ServiceMonitors
+  # expect. On kind they are permanently DOWN: noise in the target list, no
+  # signal, and a plausible question from an examiner. Each key is written out
+  # separately on purpose -- `a: b: c:` with one `enabled: false` at the end is
+  # not a group, it is three nulls and Helm fails on the first one.
+
+grafana:
+  enabled: true
+  # No adminPassword here on purpose. Left unset, the chart generates a random
+  # password into a Kubernetes Secret in the cluster, and bootstrap.sh prints
+  # the one-line command to read it. A password in this file would be a
+  # plaintext secret in git -- exactly what the brief forbids.
+  resources:
+    requests:
+      cpu: 20m
+      memory: 90Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 120Mi
+
+prometheus:
+  prometheusSpec:
+    # ----------------------------------------------------------------------
+    # The single setting that decides whether the canary analysis sees any data
+    # at all. serviceMonitorSelector is {} by default, but the flag below turns
+    # a {} into "only ServiceMonitors carrying this release's labels" -- which
+    # silently excludes the ServiceMonitor Argo CD deploys for the app, in a
+    # different namespace, with different labels. Turn the flag off and {}
+    # means {} : scrape every ServiceMonitor in every namespace.
+    # ----------------------------------------------------------------------
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+
+    # The analysis windows are [1m] and Prometheus keeps its TSDB on an
+    # emptyDir (storageSpec is unset), so retention only buys history for
+    # Grafana. 2 days is enough to show the releases from a whole demo session
+    # without filling the Docker VM disk.
+    retention: 2d
+
+    # Requests only, no memory limit: a Prometheus that hits its limit is OOM-
+    # killed, and the AnalysisRun would then get an empty response and abort a
+    # release that is actually healthy.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
