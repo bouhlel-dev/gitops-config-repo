@@ -18,7 +18,11 @@ mkdir -p "$TOOLS_DIR" "$CACHE_DIR"
 
 # fetch URL ARTIFACT_NAME EXPECTED_SHA256
 fetch() {
-  local url="$1" name="$2" want="$3" dest="$CACHE_DIR/$name" got
+  local url="$1" name="$2" want="$3" got
+  # A separate statement on purpose: bash expands every right-hand side of one
+  # `local` before it assigns any of them, so referring to $name inside the same
+  # declaration is an unbound variable under set -u, not a typo someone will fix.
+  local dest="$CACHE_DIR/$name"
   got="$(sha256sum "$dest" 2>/dev/null | cut -d' ' -f1 || true)"
   if [ -f "$dest" ] && [ "$got" = "$want" ]; then
     log "cached  $name"

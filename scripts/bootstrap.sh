@@ -195,13 +195,36 @@ phase_argocd() {
   # Argo CD reconciles every 180s by default, so a git push would be followed by
   # three minutes of nothing on screen. 20s keeps a live demo watchable; the
   # cost is more API queries, which on one cluster and two apps is noise.
+  #
+  # Both ConfigMaps, because the docs and the manifest disagree: Argo CD's own
+  # install.yaml wires the controller's ARGOCD_RECONCILIATION_TIMEOUT from
+  # argocd-cm (optional), while timeout.reconciliation is documented as a key of
+  # argocd-cmd-params-cm. Patching only the second one produced a measured
+  # 5-minute commit-to-deploy delay -- the key was set, the env was never read,
+  # and the controller quietly kept its default.
   log "reconciliation interval -> 20s"
-  kubectl -n "$ARGOCD_NAMESPACE" patch configmap argocd-cmd-params-cm \
-    --type merge -p '{"data":{"timeout.reconciliation":"20s"}}' >/dev/null
+  local cm
+  for cm in argocd-cm argocd-cmd-params-cm; do
+    kubectl -n "$ARGOCD_NAMESPACE" patch configmap "$cm" \
+      --type merge -p '{"data":{"timeout.reconciliation":"20s"}}' >/dev/null
+  done
   kubectl -n "$ARGOCD_NAMESPACE" rollout restart \
     statefulset/argocd-application-controller >/dev/null
   kubectl -n "$ARGOCD_NAMESPACE" rollout status \
     statefulset/argocd-application-controller --timeout=300s >/dev/null
+  # Print what the controller actually starts with, so a future Argo CD that
+  # moves the key again shows up here instead of as an unexplained lag. Neither
+  # the StatefulSet nor the Pod spec carries the resolved value -- both keep the
+  # configMapKeyRef -- so the only honest read is the running process itself.
+  local effective
+  effective="$(kubectl -n "$ARGOCD_NAMESPACE" exec "statefulset/argocd-application-controller" \
+    -- cat /proc/1/environ 2>/dev/null | tr '\0' '\n' |
+    awk -F= '/^ARGOCD_RECONCILIATION_TIMEOUT=/{print $2}')"
+  if [ "$effective" = "20s" ]; then
+    log "controller ARGOCD_RECONCILIATION_TIMEOUT=$effective"
+  else
+    warn "controller ARGOCD_RECONCILIATION_TIMEOUT=${effective:-<unset>}: the interval is still whatever the binary defaults to (180s)"
+  fi
 }
 
 phase_rollouts() {
