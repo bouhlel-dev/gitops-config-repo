@@ -4,72 +4,121 @@
 #
 # Applied by `scripts/bootstrap.sh --supply-chain`. The signing half lives in
 # app-repo at .github/workflows/ci.yml; docs/SUPPLY_CHAIN.md walks through both.
-apiVersion: kyverno.io/v1
-kind: ClusterPolicy
+#
+# This is policies.kyverno.io/v1beta1 ImageValidatingPolicy, not the older
+# kyverno.io/v1 ClusterPolicy with a `verifyImages` rule, and the reason is a
+# real incompatibility rather than a preference:
+#
+#   cosign v3 writes its signature as an OCI 1.1 referrer. GHCR does not
+#   implement the Referrers API (it answers the /referrers/ endpoint with
+#   MANIFEST_UNKNOWN), so cosign falls back to publishing the signature as a
+#   *tag in the same repository* -- `gitops-demo:sha256-03a3a9bb...` next to
+#   `gitops-demo:3aae81c`. ClusterPolicy's verifyImages rule looks in the
+#   pre-v3 location, `<repo>/sha256-<digest>.sig:latest`, finds nothing, and
+#   reports "no signatures found" for an image that `cosign verify` on the
+#   workstation accepts in the same second. Kyverno's own issue #16678 documents
+#   the split: the fallback tag is discovered by the sigstore-go path this
+#   policy uses, not by the legacy one. Upstream also deprecated
+#   kyverno.io/v1 policies, warning on every apply.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
 metadata:
   name: verify-gitops-demo-signature
 spec:
-  # Enforce, not Audit: an Audit policy produces a PolicyReport nobody reads and
-  # the demo proves nothing. The cost is real and is written down -- if Kyverno
-  # is down, every Pod CREATE in the two namespaces that match below fails with
-  # "failed calling webhook", which is why the match is narrowed to those two
-  # namespaces instead of the whole cluster.
-  validationFailureAction: Enforce
+  # Fail, not Ignore: if the policy itself cannot be evaluated, the Pod is
+  # refused. The sample policy in Kyverno's own repository ships Ignore, which
+  # is the right default for a policy being rolled out gradually and the wrong
+  # one for a control that is supposed to stop an image.
   failurePolicy: Fail
 
-  # Nothing here scans objects that already exist; the check is CREATE time
-  # only. Background scanning of an image that was signed when it was pulled and
-  # whose signature has since gone is a different question from admitting a Pod.
-  background: false
+  # Deny is the admission verb this control needs; Audit would write a report
+  # and start the pod.
+  validationActions:
+    - Deny
 
-  # Signature verification reaches out to GHCR for the .sig artifact. Kyverno's
-  # own default is 10s and GitHub's registry is not always that quick; a timeout
-  # here is a refused Pod, so give it room.
-  webhookTimeoutSeconds: 30
+  # Signature verification reaches out to GHCR for the fallback-tag artifact and
+  # to Rekor for the transparency-log entry. The default budget for a policy is
+  # 10s and GitHub's registry does not always fit inside it -- a timed-out
+  # webhook is a denied Pod, with failurePolicy: Fail, for an image that
+  # verifies perfectly. 30 is the maximum this field accepts.
+  webhookConfiguration:
+    timeoutSeconds: 30
 
-  rules:
-    - name: cosign-keyless-from-this-pipeline
-      match:
-        any:
-          - resources:
-              kinds:
-                - Pod
-              namespaces:
-                # The two namespaces this project owns. Every infrastructure
-                # component -- including Kyverno itself -- stays outside the
-                # policy, so a broken signature check cannot stop the cluster
-                # from running its own controllers.
-                - gitops-demo-dev
-                - gitops-demo-prod
-      verifyImages:
-        - # The wildcard covers both forms the pods use: ghcr.io/...:<git sha>
-          # and ghcr.io/...@sha256:<digest>. The `.sig` artifact itself lives in
-          # the same repository under a name built from the digest, so it is
-          # never matched here -- this rule only fires on Pods.
-          imageReferences:
-            - "ghcr.io/bouhlel-dev/gitops-demo*"
-          attestors:
-            - count: 1
-              entries:
-                - keyless:
-                    # Not a public key: the signing identity is the workflow that
-                    # ran. Fulcio binds the GitHub Actions OIDC token into a
-                    # short-lived certificate and Rekor records it, so "who signed
-                    # this" is answered by the certificate's own subject -- the
-                    # exact repository, workflow file and ref -- instead of by
-                    # whoever holds a key file.
-                    #
-                    # Both strings must match exactly. Rename the repo, move the
-                    # workflow or sign from a different branch and every Pod in
-                    # these namespaces starts being refused, which is the correct
-                    # failure but not an obvious one: check this file first.
-                    issuer: "https://token.actions.githubusercontent.com"
-                    subjects:
-                      - "https://github.com/bouhlel-dev/gitops-app-repo/.github/workflows/ci.yml@refs/heads/main"
-          # Leave the pod asking for the tag the manifest named. Setting this
-          # true rewrites the container image to @sha256:... at admission, which
-          # is the stronger guarantee (nothing can move the tag between
-          # verification and pull), at the cost of pods whose image string no
-          # longer matches anything in git -- every "which release is running"
-          # command has to resolve the digest before it can answer.
-          mutateImage: false
+  # Only CREATE, only the two namespaces this project owns. `pods` is what the
+  # rule says and what the demo exercises; Kyverno also autogenerates the same
+  # rule for Deployment, ReplicaSet, StatefulSet, DaemonSet, Job and CronJob, so
+  # the ReplicaSet is refused before it can make a pod. Nothing here reaches an
+  # already-running object. A Deny + Fail policy across every namespace would
+  # turn one bad signature lookup into a cluster that cannot restart its own
+  # control plane -- and Kyverno itself has to be able to come up.
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+    # kubernetes.io/metadata.name is put on every Namespace by the control
+    # plane itself, so this selects on identity rather than on a label someone
+    # might forget to set.
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values:
+            - gitops-demo-dev
+            - gitops-demo-prod
+
+  # The wildcard covers both forms a pod can use: the tag the promotion writes
+  # and a digest reference. The signature artifact itself is reached through
+  # this same repository, so it never appears here -- an image that is not the
+  # application is not checked at all.
+  matchImageReferences:
+    - glob: "ghcr.io/bouhlel-dev/gitops-demo*"
+
+  attestors:
+    - name: pipeline
+      cosign:
+        keyless:
+          # Not a public key: the signing identity is the workflow that ran.
+          # Fulcio binds the GitHub Actions OIDC token into a short-lived
+          # certificate whose subject is the exact repository, workflow file and
+          # ref, and the verification question becomes "did that workflow sign
+          # this" instead of "does whoever holds this file agree".
+          #
+          # `identities` is a list here, and both fields are strict matches --
+          # `issuerRegExp` / `subjectRegExp` are the regexp forms. Rename the
+          # repo, move the workflow or sign from another ref and every Pod in
+          # the two namespaces starts being refused: the correct failure, and
+          # not an obvious one, so check this file first.
+          identities:
+            - issuer: "https://token.actions.githubusercontent.com"
+              subject: "https://github.com/bouhlel-dev/gitops-app-repo/.github/workflows/ci.yml@refs/heads/main"
+        # The transparency log. Without it the check is "this certificate looked
+        # valid"; with it the check is "this certificate was issued for that
+        # identity on that date and is recorded publicly", which is what stops a
+        # certificate issued before the repository existed or after it moved.
+        ctlog:
+          url: https://rekor.sigstore.dev
+
+  # Both digest settings are load-bearing, and both defaults are wrong here:
+  #   verifyDigest (default true) requires the image to *already be* referenced
+  #     by digest -- "image ghcr.io/...:3aae81c does not have a digest" is the
+  #     denial. This project promotes tags, so the verifier has to resolve the
+  #     tag to the digest the signature hangs off.
+  #   mutateDigest (default true) would then rewrite the Pod's image to
+  #     @sha256:... at admission -- the stronger guarantee, and the one that
+  #     breaks every check in this project that counts pods by image tag,
+  #     including step 8 of demo-good-release.sh.
+  validationConfigurations:
+    verifyDigest: false
+    mutateDigest: false
+
+  validations:
+    # verifyImageSignatures returns the number of signatures that matched the
+    # attestor for that image, so the assertion is "at least one", for every
+    # container. Images excluded by matchImageReferences are skipped by the
+    # verifier rather than counted as failures.
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.pipeline])).all(e, e > 0)
+      message: >-
+        the image is not signed by the gitops-app-repo main-branch pipeline

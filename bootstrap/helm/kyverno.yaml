@@ -1,11 +1,11 @@
-# Kyverno 3.0.5 -- the chart version is pinned in versions.env and resolves to
-# the v1.10.3 images, so pinning the chart pins the admission controller.
+# Kyverno 3.9.2 -- the chart version is pinned in versions.env and resolves to
+# the v1.19.2 image, so pinning the chart pins the admission controller.
 #
 # Only the webhook is installed. It is the component that runs cosign against a
 # Pod at CREATE time; the background, cleanup and reports controllers exist to
 # scan objects that already live in the cluster and to write PolicyReports. On a
-# one-node kind cluster that is four more deployments and 500 MB of images for a
-# capability this demo does not demonstrate.
+# one-node kind cluster that is four more deployments and several hundred MB of
+# images for a capability this demo does not demonstrate.
 admissionController:
   replicas: 1
   container:
@@ -37,16 +37,11 @@ features:
     enabled: false
 
 webhooksCleanup:
-  # The chart's own default is `bitnami/kubectl:latest`. A pre-delete hook that
-  # can change without a commit is exactly what the pins in versions.env exist
-  # to prevent, so the tag is written out even though this container only runs
-  # when the release is deleted.
-  image: docker.io/bitnami/kubectl:1.26.4
-
-cleanupJobs:
-  # The two CronJobs the chart ships by default, both of which delete report
-  # objects that this install never produces.
-  admissionReports:
-    enabled: false
-  clusterAdmissionReports:
-    enabled: false
+  # The pre-delete hook that removes the webhook configurations when the release
+  # is deleted. It runs an image whose chart default is a moving tag
+  # (`ghcr.io/kyverno/readiness-checker` with no tag, i.e. `latest`), and the
+  # only tags published for it are commit SHAs -- neither acceptable under the
+  # pinning rule in versions.env. The hook is also pointless here: `kind delete
+  # cluster` takes the webhook configurations with the rest of the cluster, and
+  # `bootstrap.sh --destroy` is the only teardown this project documents.
+  enabled: false

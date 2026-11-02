@@ -3,7 +3,7 @@
 #
 #   scripts/bootstrap.sh                    create the cluster and install everything
 #   scripts/bootstrap.sh --supply-chain     the above, plus Kyverno and the
-#                                           ClusterPolicy that refuses an
+#                                           ImageValidatingPolicy that refuses an
 #                                           unsigned image
 #   scripts/bootstrap.sh --status           report what is running, install nothing
 #   scripts/bootstrap.sh --destroy          delete the kind cluster
@@ -280,6 +280,22 @@ phase_kyverno() {
   # that is already carrying Prometheus.
   log "kyverno $KYVERNO_CHART_VERSION (admission controller only)"
   create_namespace "$KYVERNO_NAMESPACE"
+  # A run interrupted during an upgrade leaves the release at pending-upgrade,
+  # and helm refuses to upgrade a release it still believes is mid-upgrade -- the
+  # next attempt dies with "another operation is in progress" rather than with
+  # anything about the real problem. The first time this happened, the upgrade was
+  # the chart's post-upgrade kyverno-cli Job spending the whole 10m --timeout
+  # stuck in ContainerCreating on an image no pre-pull list covered.
+  local status
+  status="$(helm -n "$KYVERNO_NAMESPACE" list -f "^$KYVERNO_RELEASE\$" -o json 2>/dev/null \
+            | grep -o '"status": *"[^"]*"' | cut -d'"' -f4)"
+  case "$status" in
+    pending-*)
+      warn "$KYVERNO_RELEASE is $status from an earlier run -- rolling back to the last deployed revision"
+      helm -n "$KYVERNO_NAMESPACE" rollback "$KYVERNO_RELEASE" >/dev/null 2>&1 \
+        || die "could not roll back a $KYVERNO_RELEASE left $status: helm -n $KYVERNO_NAMESPACE history $KYVERNO_RELEASE"
+      ;;
+  esac
   helm_install "$KYVERNO_RELEASE" "oci://ghcr.io/kyverno/charts/kyverno" "" \
     "$KYVERNO_CHART_VERSION" "$KYVERNO_NAMESPACE" \
     "$HELM_VALUES_DIR/kyverno.yaml" 10m
@@ -288,35 +304,51 @@ phase_kyverno() {
   # "failed calling webhook". Wait for the endpoint, not just the pod.
   # kubernetes.io/service-name is put on every EndpointSlice by the endpoints
   # controller itself, so it does not depend on which labels the chart happens
-  # to set this release.
+  # to set this release. The Service is <release>-svc, not <release>-
+  # admission-controller: the chart names the Deployment after the component and
+  # the Service after the release, which is how this check failed its first run.
   local i
   for i in $(seq 1 90); do
     if kubectl -n "$KYVERNO_NAMESPACE" get endpointslices \
-        -l "kubernetes.io/service-name=$KYVERNO_RELEASE-admission-controller" \
+        -l "kubernetes.io/service-name=$KYVERNO_RELEASE-svc" \
         -o jsonpath='{.items[*].endpoints[*].addresses[*]}' 2>/dev/null | grep -q .; then
       log "kyverno webhook has an endpoint"
       return
     fi
     sleep 2
   done
-  die "kyverno-admission-controller never got an endpoint: kubectl -n $KYVERNO_NAMESPACE get pods,svc,endpointslices"
+  die "kyverno-svc never got an endpoint: kubectl -n $KYVERNO_NAMESPACE get pods,svc,endpointslices"
 }
 
 phase_policy() {
-  log "ClusterPolicy -> an unsigned gitops-demo image cannot be scheduled"
+  log "ImageValidatingPolicy -> an unsigned gitops-demo image cannot be scheduled"
   kubectl apply -f "$KYVERNO_POLICY_DIR" >/dev/null
-  for i in $(seq 1 30); do
-    [ "$(kubectl -n "$KYVERNO_NAMESPACE" get deploy kyverno-admission-controller \
-        -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" = "1" ] && break
+  # Kyverno registers the admission webhook itself, once it has its certificate,
+  # and the policy reports that it happened: status.conditionStatus.ready is true
+  # only after the WebhookConfigured condition does. That is the difference
+  # between "policy applied" and "policy firing", so wait on it rather than on a
+  # sleep -- an apply that lands before the webhook exists admits everything.
+  local i
+  for i in $(seq 1 60); do
+    if [ "$(kubectl get imagevalidatingpolicy verify-gitops-demo-signature \
+            -o jsonpath='{.status.conditionStatus.ready}' 2>/dev/null)" = "true" ]; then
+      break
+    fi
     sleep 2
   done
-  # Kyverno writes the webhook configuration itself, once it has its certificate.
-  # Checking it is the difference between "policy applied" and "policy firing".
-  kubectl get validatingwebhookconfigurations kyverno-admission-controller \
-    >/dev/null 2>&1 \
-    || die "the kyverno ValidatingWebhookConfiguration never appeared: kubectl -n $KYVERNO_NAMESPACE logs deploy/kyverno-admission-controller"
-  kubectl get clusterpolicy verify-gitops-demo-signature \
-    -o jsonpath='{.metadata.name} ready={.status.ready}{"\n"}' 2>/dev/null || true
+  kubectl get imagevalidatingpolicy verify-gitops-demo-signature \
+    -o jsonpath='{.status.conditionStatus.ready}' 2>/dev/null | grep -qx true \
+    || die "the policy never became ready: kubectl -n $KYVERNO_NAMESPACE logs deploy/kyverno-admission-controller"
+  # Belt and braces, and the name is the useful part: this policy's webhook is
+  # ivpol.validate.kyverno.svc-fail, registered inside the *resource* validating
+  # configuration next to the one protecting Kyverno's own generation labels.
+  # `kubectl get validatingwebhookconfigurations kyverno` finds nothing at all.
+  kubectl get validatingwebhookconfigurations kyverno-resource-validating-webhook-cfg \
+    -o jsonpath='{.webhooks[*].name}' 2>/dev/null | grep -q ivpol.validate \
+    || die "the ivpol webhook is not in kyverno-resource-validating-webhook-cfg: kubectl -n $KYVERNO_NAMESPACE logs deploy/kyverno-admission-controller"
+  kubectl get imagevalidatingpolicy verify-gitops-demo-signature \
+    -o jsonpath='{.metadata.name} ready={.status.conditionStatus.ready} deny_on={.spec.validationActions}{"\n"}' \
+    2>/dev/null || true
 }
 
 app_state() {
@@ -419,14 +451,6 @@ esac
 
 phase_preflight
 phase_cluster
-if [ "$SUPPLY_CHAIN" = 1 ]; then
-  # Checked here, before anything is downloaded: a half-installed supply chain is
-  # worse than none, because the ClusterPolicy is the part that blocks a pod.
-  for tool in cosign; do
-    command -v "$tool" >/dev/null 2>&1 \
-      || die "$tool not found -- run scripts/install-tools.sh, then source scripts/env.sh"
-  done
-fi
 phase_prepull
 phase_ingress
 phase_monitoring

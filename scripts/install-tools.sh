@@ -30,8 +30,11 @@ fetch() {
   fi
   rm -f "$dest"
   log "downloading $name"
+  # 30 minutes, not 5: the largest pinned asset here is cosign's Windows binary
+  # at 191 MB, and a capped download leaves a truncated file in the cache that
+  # fails the checksum on the next run -- which then deletes it and starts over.
   curl --fail --location --proto "=https" --retry 3 --connect-timeout 15 \
-    --max-time 300 -o "$dest" "$url" || die "download failed: $url"
+    --max-time 1800 -o "$dest" "$url" || die "download failed: $url"
   got="$(sha256sum "$dest" | cut -d' ' -f1)"
   [ "$got" = "$want" ] || die "checksum mismatch for $name
   expected $want
