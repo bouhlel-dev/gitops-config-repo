@@ -37,7 +37,7 @@ source scripts/env.sh          # puts the pinned toolchain on PATH for this shel
 ## One-command bootstrap
 
 ```bash
-scripts/install-tools.sh       # kind, kubectl, helm, kustomize, gh, rollouts plugin
+scripts/install-tools.sh       # kind, kubectl, helm, kustomize, gh, rollouts plugin, cosign
 bash scripts/bootstrap.sh      # cluster + ingress + monitoring + Argo CD + Rollouts + apps
 ```
 
@@ -50,7 +50,14 @@ minutes, almost all of it pulling images.
 ```bash
 bash scripts/bootstrap.sh --status     # what is running, installs nothing
 bash scripts/bootstrap.sh --destroy    # delete the kind cluster, touch nothing else
+bash scripts/bootstrap.sh --supply-chain
 ```
+
+`--supply-chain` is the bonus: it adds Kyverno's admission webhook and applies
+the ClusterPolicy that refuses a Pod whose image was not signed by this
+pipeline. It is a flag and not the default because the policy is `Enforce`, and
+applying it while an unsigned tag is the one being rolled out stops that rollout
+mid-canary. See [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md).
 
 ### Verify it worked
 
@@ -77,13 +84,15 @@ apps/gitops-demo/base/          the one copy of the truth: Rollout, Services,
 apps/gitops-demo/overlays/dev/  10 replicas, host gitops-demo.local, APP_ENV=dev
 apps/gitops-demo/overlays/prod/ 20 replicas, host gitops-demo-prod.local
 bootstrap/kind/                 the kind cluster config (port mappings)
-bootstrap/helm/                 values for ingress-nginx and the monitoring stack
+bootstrap/helm/                 values for ingress-nginx, the monitoring stack,
+                                and Kyverno
 bootstrap/argocd/applications/  the two Application objects
+bootstrap/kyverno/              the ClusterPolicy that refuses an unsigned image
 scripts/bootstrap.sh            the one command
 scripts/install-tools.sh        the pinned toolchain
 scripts/loadgen.py              the traffic the analysis is measured on
 scripts/dora.py                 the four DORA keys, from git and AnalysisRuns
-scripts/demo-*.sh               the three demo scenarios
+scripts/demo-*.sh               the four demo scenarios
 versions.env                    every version in the chain, pinned, with checksums
 ```
 
@@ -94,11 +103,14 @@ versions.env                    every version in the chain, pinned, with checksu
    Trivy, and **only then** pushes `ghcr.io/bouhlel-dev/gitops-demo:<git sha>`.
    `latest` is never pushed alone: the tag is the commit, so an image can always
    be traced back to the code that produced it.
-3. CI runs `kustomize edit set image` on `apps/gitops-demo/base`, re-renders to
+3. CI signs the pushed digest with cosign, keyless, and reads the signature back
+   with the same two strings the in-cluster policy checks. A signature the
+   registry will not serve is a red build, not a release no pod can start.
+4. CI runs `kustomize edit set image` on `apps/gitops-demo/base`, re-renders to
    check the tag really is in both overlays, opens a PR against this repo and
    squash-merges it. That merge is the deployment approval.
-4. Argo CD notices the new commit, diffs it against the cluster, and syncs.
-5. Argo Rollouts walks the new ReplicaSet 10 → 30 → 60 → 100, and Prometheus
+5. Argo CD notices the new commit, diffs it against the cluster, and syncs.
+6. Argo Rollouts walks the new ReplicaSet 10 → 30 → 60 → 100, and Prometheus
    decides at three gates whether it is allowed to continue.
 
 Nothing in CI ever runs `kubectl`. Nothing in this repo contains application

@@ -75,7 +75,7 @@ Include the diagram from `docs/ARCHITECTURE.md` and the release sequence.
 
 ## 5. Evaluation method (800)
 
-How the system was exercised rather than merely run: three scripted scenarios,
+How the system was exercised rather than merely run: four scripted scenarios,
 each a real release; load generation as a precondition of the measurement, not an
 afterthought; what was measured and with which command. Say plainly that the
 sample is small — one regression, one drift event, a handful of releases — so the
@@ -96,8 +96,9 @@ command.
 | Success rate on a healthy canary | 1.00 against a 0.99 threshold | same |
 | Traffic behind one release | ~34 000 requests, 26 transport errors | `scripts/loadgen.py` summary |
 | Hand-patched ConfigMap → reverted | 3 s | `scripts/demo-drift.sh` |
-| Faulty release → abort | *fill from demo-bad-release.sh* | `kubectl -n gitops-demo-dev get analysisruns` |
-| Faulty release → healthy again | *fill: MTTR from `scripts/dora.py`* | `python scripts/dora.py --days 1` |
+| Faulty release → abort | 277 s from push to abort. The gate's first p95 sample read 0.886 s against the 0.5 s threshold and `failureLimit: 0` ended the run on the spot; the success rate stayed at 1.00 all the way through, because the fault was latency and not errors | `bash scripts/demo-bad-release.sh` |
+| Faulty release → healthy again | 9 m 48 s from the abort to the corrected release finishing its canary at 100%; 864 s from pushing the revert to both apps Healthy | `python scripts/dora.py --days 1` |
+| DORA, this window | 5 releases, lead time median 81 s, 1 of 12 analysis runs Failed, gap between releases median 8 m 50 s | `python scripts/dora.py --days 1` |
 
 The centre of gravity of this section is the bad release: ruff passes, pytest
 passes (28 tests, none measures a duration), the build succeeds, Trivy reports
