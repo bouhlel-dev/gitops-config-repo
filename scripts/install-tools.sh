@@ -69,7 +69,7 @@ install_binary kubectl.exe kubectl.exe "$KUBECTL_SHA256" \
 install_from_zip helm.zip "helm-$HELM_VERSION-windows-amd64.zip" "$HELM_SHA256" \
   "https://get.helm.sh/helm-$HELM_VERSION-windows-amd64.zip" helm.exe helm.exe
 install_from_zip kustomize.zip "kustomize_${KUSTOMIZE_VERSION#v}_windows_amd64.zip" "$KUSTOMIZE_SHA256" \
-  "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F$KUSTOMIZE_VERSION/kustomize_${KUSTOMIZE_VERSION#v}_windows_amd64.zip" \
+  "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/$KUSTOMIZE_VERSION/kustomize_${KUSTOMIZE_VERSION#v}_windows_amd64.zip" \
   kustomize.exe kustomize.exe
 install_binary kubectl-argo-rollouts kubectl-argo-rollouts.exe "$ARGO_ROLLOUTS_SHA256" \
   "https://github.com/argoproj/argo-rollouts/releases/download/$ARGO_ROLLOUTS_VERSION/kubectl-argo-rollouts-windows-amd64"
