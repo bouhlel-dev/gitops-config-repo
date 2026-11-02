@@ -102,10 +102,22 @@ wait_ci() {
 }
 
 ci_is_green() {
-  local conclusion
-  conclusion="$(gh run view "$1" --repo "$APP_REPO_SLUG" --json conclusion --jq .conclusion 2>/dev/null || echo Pending)"
-  printf '  CI conclusion=%s\r' "$conclusion"
-  [ "$conclusion" = success ]
+  local state conclusion
+  state="$(gh run view "$1" --repo "$APP_REPO_SLUG" --json status,conclusion \
+    --jq '.status + "/" + .conclusion' 2>/dev/null || echo 'queued/')"
+  conclusion="${state##*/}"
+  printf '  run %s\r' "$state"
+  case "$conclusion" in
+    success) return 0 ;;
+    # A red pipeline is not a slow pipeline. Waiting out the timeout on a run
+    # GitHub has already called a failure costs the demo ten minutes and reports
+    # "timed out" instead of the step that broke.
+    failure | cancelled | timed_out)
+      echo
+      die "CI failed on run $1. See: gh run view $1 --repo $APP_REPO_SLUG --log-failed"
+      ;;
+  esac
+  return 1
 }
 
 # The end state that matters is the manifest, not the git pointer: the Rollout
@@ -137,7 +149,11 @@ rollout_phase() {
 }
 
 canary_weight() {
-  kubectl -n "$1" get rollout "$ROLLOUT_NAME" -o jsonpath='{.status.canary.currentWeight}' 2>/dev/null || echo 0
+  # Not .status.canary.currentWeight: that key does not exist in Rollouts 1.10,
+  # which reports the live split as .status.canary.weights.canary.weight. Reading
+  # the wrong path means waiting forever on an empty string.
+  kubectl -n "$1" get rollout "$ROLLOUT_NAME" \
+    -o 'jsonpath={.status.canary.weights.canary.weight}' 2>/dev/null || echo 0
 }
 
 abort_reason() {
@@ -193,18 +209,29 @@ import sys
 
 run = json.load(sys.stdin)
 for metric in run.get("status", {}).get("metricResults", []):
-    samples = metric.get("samples", [])
-    last = "-"
-    if samples:
-        last = "%s %s" % (samples[-1].get("phase", "?"), samples[-1].get("value", "-"))
-    print("  %-14s phase=%-9s measured=%s failed=%s  last sample: %s"
+    # Rollouts 1.10 records each probe under "measurements"; older builds called
+    # the same list "samples". Read whichever is there, or the demo silently
+    # prints an empty table for an AnalysisRun that measured four times.
+    readings = metric.get("measurements") or metric.get("samples") or []
+    values = " ".join(
+        "%s" % (m.get("value", "-"),) for m in readings[-4:]
+    )
+    print("  %-14s phase=%-9s measured=%s failed=%s"
           % (metric.get("name", "?"), metric.get("phase", "?"),
-             metric.get("count", 0), metric.get("failedCount", 0), last))
+             metric.get("count", 0), metric.get("failedCount", 0)))
+    print("      values: %s" % (values or "-"))
+    query = (metric.get("metadata") or {}).get("ResolvedPrometheusQuery", "")
+    if query:
+        print("      query:  %s" % " ".join(query.split()))
 '
 }
 
+# Newest by creation time, not by name: AnalysisRuns are named
+# <rollout>-<hash>-<step>-<index>, so "...-2-10" sorts before "...-2-4" and the
+# last item alphabetically is the second gate, not the one that just failed.
 latest_analysis_run() {
-  kubectl -n "$1" get analysisruns -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null || true
+  kubectl -n "$1" get analysisruns --sort-by=.metadata.creationTimestamp \
+    -o 'jsonpath={.items[-1:].metadata.name}' 2>/dev/null || true
 }
 
 # --------------------------------------------------------------------- traffic --

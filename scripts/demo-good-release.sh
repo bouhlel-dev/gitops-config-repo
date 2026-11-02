@@ -74,9 +74,12 @@ until_or_timeout "$SYNC_TIMEOUT" "$PROD_APP to settle" app_healthy "$PROD_APP"
 
 step 8 "every pod in both environments runs the new image"
 for ns in "$DEV_NAMESPACE" "$PROD_NAMESPACE"; do
+  # Count on the image field, not the pod name: names carry the pod-template
+  # hash, so grepping a name for the tag matches nothing on a good release.
   printf '  %-18s %s of %s pods on :%s\n' "$ns" \
-    "$(kubectl -n "$ns" get pods -l app="$ROLLOUT_NAME" --no-headers | grep -c "${HEAD_SHA:0:$IMAGE_TAG_LEN}")" \
-    "$(kubectl -n "$ns" get pods -l app="$ROLLOUT_NAME" --no-headers | wc -l)" \
+    "$(kubectl -n "$ns" get pods -o jsonpath='{range .items[*]}{.spec.containers[0].image}{"\n"}{end}' |
+      grep -c ":${HEAD_SHA:0:$IMAGE_TAG_LEN}")" \
+    "$(kubectl -n "$ns" get pods --no-headers | wc -l)" \
     "${HEAD_SHA:0:$IMAGE_TAG_LEN}"
 done
 analysis_runs "$DEV_NAMESPACE"

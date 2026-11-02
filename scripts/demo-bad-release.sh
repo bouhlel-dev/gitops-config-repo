@@ -81,14 +81,19 @@ log "phase=$(rollout_phase "$DEV_NAMESPACE")  reason=$(abort_reason "$DEV_NAMESP
 run="$(latest_analysis_run "$DEV_NAMESPACE")"
 log "AnalysisRun $run:"
 analysis_detail "$DEV_NAMESPACE" "$run"
-echo "  the faulty pods and their metrics:"
-kubectl -n "$DEV_NAMESPACE" get pods -l app="$ROLLOUT_NAME" --no-headers |
-  awk -v tag="$bad_tag" '{print "    " $1, $2, $3}' | grep -F "$bad_tag" ||
-  echo "    (the canary pods are already gone -- that IS the rollback)"
+echo "  the two pod-template hashes the split was between:"
+kubectl -n "$DEV_NAMESPACE" get rollout "$ROLLOUT_NAME" \
+  -o 'jsonpath={.status.canary.weights}{"\n"}' | sed 's/^/    /'
 
 step 7 "what the cluster did with no help"
-printf '  stable pods:      %s\n' "$(kubectl -n "$DEV_NAMESPACE" get rollout "$ROLLOUT_NAME" -o jsonpath='{.status.stableScaleSelector}')x pods"
-printf '  traffic to canary: %s%%\n' "$(canary_weight "$DEV_NAMESPACE")"
+# .status.stableScaleSelector does not exist in Rollouts 1.10; the honest
+# evidence is the ReplicaSet table and which pods are left standing.
+kubectl -n "$DEV_NAMESPACE" get replicasets -l app="$ROLLOUT_NAME" \
+  -o custom-columns=NAME:.metadata.name,DESIRED:.spec.replicas,READY:.status.readyReplicas,IMAGE:.spec.template.spec.containers[0].image |
+  sed 's|ghcr.io/bouhlel-dev/gitops-demo:||' | sed 's/^/  /'
+printf '  traffic back on the old version: canary weight %s%%, phase %s\n' \
+  "$(canary_weight "$DEV_NAMESPACE")" "$(rollout_phase "$DEV_NAMESPACE")"
+echo "  AnalysisRuns this release produced:"
 analysis_runs "$DEV_NAMESPACE"
 echo
 log "detection took $((aborted_at - started))s from the push, and no human touched the cluster"
