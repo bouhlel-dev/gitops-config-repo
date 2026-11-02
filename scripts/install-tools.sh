@@ -83,6 +83,10 @@ install_binary kubectl-argo-rollouts kubectl-argo-rollouts.exe "$ARGO_ROLLOUTS_S
 install_from_zip gh.zip "gh_${GH_VERSION#v}_windows_amd64.zip" "$GH_SHA256" \
   "https://github.com/cli/cli/releases/download/$GH_VERSION/gh_${GH_VERSION#v}_windows_amd64.zip" \
   gh.exe gh.exe
+# cosign is the local half of the supply chain: CI signs, this verifies. The
+# asset is a bare .exe, so install_binary rather than the zip path.
+install_binary cosign-windows-amd64.exe cosign.exe "$COSIGN_SHA256" \
+  "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-windows-amd64.exe"
 
 # Deliberately not installed locally:
 #   trivy   -- scanning is a CI gate (see TRIVY_VERSION in versions.env); the
@@ -97,5 +101,6 @@ printf '%-24s %s\n' "helm"      "$(helm version --short 2>&1 | first_line)"
 printf '%-24s %s\n' "kustomize" "$(kustomize version 2>&1 | first_line)"
 printf '%-24s %s\n' "rollouts"  "$(kubectl argo rollouts version 2>&1 | first_line)"
 printf '%-24s %s\n' "gh"        "$(gh --version 2>&1 | first_line)"
+printf '%-24s %s\n' "cosign"    "$(cosign version 2>&1 | first_line)"
 
 log "done. In a new shell, run:  source $REPO_DIR/scripts/env.sh"

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # One-command cluster bootstrap for the GitOps demo.
 #
-#   scripts/bootstrap.sh             create the cluster and install everything
-#   scripts/bootstrap.sh --status    report what is running, install nothing
-#   scripts/bootstrap.sh --destroy   delete the kind cluster
+#   scripts/bootstrap.sh                    create the cluster and install everything
+#   scripts/bootstrap.sh --supply-chain     the above, plus Kyverno and the
+#                                           ClusterPolicy that refuses an
+#                                           unsigned image
+#   scripts/bootstrap.sh --status           report what is running, install nothing
+#   scripts/bootstrap.sh --destroy          delete the kind cluster
 #
 # Re-runnable by design: each phase checks for its own end state, so a failed
 # run is repaired by running the script again, not by undoing anything. The
@@ -27,6 +30,9 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 # shellcheck source=./env.sh
 source ./env.sh
+
+# 1 when the optional signature-enforcement component should be installed too.
+SUPPLY_CHAIN=0
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m~~~\033[0m %s\n' "$*"; }
@@ -119,9 +125,16 @@ phase_prepull() {
     warn "SKIP_PREPULL=1 -- the node will fetch each image itself"
     return
   fi
+  prepull_list "$INFRA_IMAGES"
+  if [ "$SUPPLY_CHAIN" = 1 ]; then
+    prepull_list "$SUPPLY_CHAIN_IMAGES"
+  fi
+}
+
+prepull_list() {
   local node="$CLUSTER_NAME-control-plane" image present
   present="$(docker exec "$node" ctr -n k8s.io images ls -q 2>/dev/null || true)"
-  for image in $INFRA_IMAGES; do
+  for image in $1; do
     if printf '%s\n' "$present" | grep -qxF "$image"; then
       log "in node   $image"
       continue
@@ -145,9 +158,14 @@ phase_prepull() {
 helm_install() {
   local release="$1" chart="$2" repo="$3" version="$4" namespace="$5" values="$6" timeout="$7"
   local attempt
+  # --repo only applies to an http chart index. Kyverno publishes as an OCI
+  # artifact, whose ref already names the registry, so passing --repo there is
+  # an error rather than a no-op.
+  local repo_flag=()
+  [ -z "$repo" ] || repo_flag=(--repo "$repo")
   for attempt in 1 2 3; do
     if helm upgrade --install "$release" "$chart" \
-      --repo "$repo" --version "$version" \
+      "${repo_flag[@]}" --version "$version" \
       --namespace "$namespace" --create-namespace \
       --values "$values" --wait --timeout "$timeout"; then
       return 0
@@ -254,6 +272,53 @@ phase_applications() {
   kubectl -n "$ARGOCD_NAMESPACE" apply -f "$APPLICATIONS_DIR" >/dev/null
 }
 
+phase_kyverno() {
+  # The admission webhook is the only Kyverno component this project needs: it
+  # is the thing that reads the cosign signature at CREATE time. The background,
+  # cleanup and reports controllers scan existing objects and write PolicyReports
+  # -- useful in a real cluster, four more deployments on a one-node kind cluster
+  # that is already carrying Prometheus.
+  log "kyverno $KYVERNO_CHART_VERSION (admission controller only)"
+  create_namespace "$KYVERNO_NAMESPACE"
+  helm_install "$KYVERNO_RELEASE" "oci://ghcr.io/kyverno/charts/kyverno" "" \
+    "$KYVERNO_CHART_VERSION" "$KYVERNO_NAMESPACE" \
+    "$HELM_VALUES_DIR/kyverno.yaml" 10m
+  # The webhook is a cluster-scoped admission hook: an apply that lands before
+  # the Service has endpoints makes every matching CREATE fail with
+  # "failed calling webhook". Wait for the endpoint, not just the pod.
+  # kubernetes.io/service-name is put on every EndpointSlice by the endpoints
+  # controller itself, so it does not depend on which labels the chart happens
+  # to set this release.
+  local i
+  for i in $(seq 1 90); do
+    if kubectl -n "$KYVERNO_NAMESPACE" get endpointslices \
+        -l "kubernetes.io/service-name=$KYVERNO_RELEASE-admission-controller" \
+        -o jsonpath='{.items[*].endpoints[*].addresses[*]}' 2>/dev/null | grep -q .; then
+      log "kyverno webhook has an endpoint"
+      return
+    fi
+    sleep 2
+  done
+  die "kyverno-admission-controller never got an endpoint: kubectl -n $KYVERNO_NAMESPACE get pods,svc,endpointslices"
+}
+
+phase_policy() {
+  log "ClusterPolicy -> an unsigned gitops-demo image cannot be scheduled"
+  kubectl apply -f "$KYVERNO_POLICY_DIR" >/dev/null
+  for i in $(seq 1 30); do
+    [ "$(kubectl -n "$KYVERNO_NAMESPACE" get deploy kyverno-admission-controller \
+        -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" = "1" ] && break
+    sleep 2
+  done
+  # Kyverno writes the webhook configuration itself, once it has its certificate.
+  # Checking it is the difference between "policy applied" and "policy firing".
+  kubectl get validatingwebhookconfigurations kyverno-admission-controller \
+    >/dev/null 2>&1 \
+    || die "the kyverno ValidatingWebhookConfiguration never appeared: kubectl -n $KYVERNO_NAMESPACE logs deploy/kyverno-admission-controller"
+  kubectl get clusterpolicy verify-gitops-demo-signature \
+    -o jsonpath='{.metadata.name} ready={.status.ready}{"\n"}' 2>/dev/null || true
+}
+
 app_state() {
   kubectl -n "$ARGOCD_NAMESPACE" get application "$1" \
     -o jsonpath='{.status.sync.status}/{.status.health.status}' 2>/dev/null || echo "Pending"
@@ -343,16 +408,33 @@ case "${1:-}" in
     log "cluster gone. Nothing else was touched: the repos, the GHCR image and .tools are untouched."
     exit 0
     ;;
+  --supply-chain)
+    SUPPLY_CHAIN=1
+    shift
+    [ "${1:-}" = "" ] || die "usage: scripts/bootstrap.sh [--status|--destroy|--supply-chain]"
+    ;;
   "") ;;
-  *) die "usage: scripts/bootstrap.sh [--status|--destroy]" ;;
+  *) die "usage: scripts/bootstrap.sh [--status|--destroy|--supply-chain]" ;;
 esac
 
 phase_preflight
 phase_cluster
+if [ "$SUPPLY_CHAIN" = 1 ]; then
+  # Checked here, before anything is downloaded: a half-installed supply chain is
+  # worse than none, because the ClusterPolicy is the part that blocks a pod.
+  for tool in cosign; do
+    command -v "$tool" >/dev/null 2>&1 \
+      || die "$tool not found -- run scripts/install-tools.sh, then source scripts/env.sh"
+  done
+fi
 phase_prepull
 phase_ingress
 phase_monitoring
 phase_argocd
 phase_rollouts
 phase_applications
+if [ "$SUPPLY_CHAIN" = 1 ]; then
+  phase_kyverno
+  phase_policy
+fi
 phase_report

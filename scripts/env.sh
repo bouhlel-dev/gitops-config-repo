@@ -31,12 +31,15 @@ export MONITORING_NAMESPACE=monitoring
 export INGRESS_NAMESPACE=ingress-nginx
 export DEV_NAMESPACE=gitops-demo-dev
 export PROD_NAMESPACE=gitops-demo-prod
+export KYVERNO_NAMESPACE=kyverno
 
 # Where bootstrap.sh finds its inputs.
 export BOOTSTRAP_DIR="$REPO_DIR/bootstrap"
 export HELM_VALUES_DIR="$BOOTSTRAP_DIR/helm"
 export APPLICATIONS_DIR="$BOOTSTRAP_DIR/argocd/applications"
+export KYVERNO_POLICY_DIR="$BOOTSTRAP_DIR/kyverno"
 
 # Helm release names, so a service can be named in one place.
 export INGRESS_RELEASE=ingress-nginx
 export MONITORING_RELEASE=kube-prometheus-stack
+export KYVERNO_RELEASE=kyverno
