@@ -13,3 +13,5 @@ Dockerfile text eol=lf
 Makefile text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
+# Every pattern would otherwise end in \r and silently stop matching.
+.dockerignore text eol=lf
