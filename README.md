@@ -244,12 +244,14 @@ is the p95 of one canary pod.
   orchestration, which is where GitOps usually gets hard.
 - CI signs every image it publishes, but **nothing checks that signature unless
   `bootstrap.sh --supply-chain` has run**, and even then only at admission in
-  the two app namespaces. The transparency log is part of the check — Rekor is
-  what makes "this certificate was issued for that identity on that date"
-  verifiable rather than merely plausible — but there is no SBOM and no SLSA
-  provenance, so the certificate says "this workflow, this ref", not "this build
-  is reproducible". `docs/SUPPLY_CHAIN.md` states where that line is, and why the
-  policy is not a `ClusterPolicy`.
+  the two app namespaces, only on CREATE. A `kubectl set image` against a running
+  pod — one of the few fields Kubernetes lets you change in place — reaches an
+  unsigned tag unchecked; measured, not theorised. The transparency log is part
+  of the check — Rekor is what makes "this certificate was issued for that
+  identity on that date" verifiable rather than merely plausible — but there is
+  no SBOM and no SLSA provenance, so the certificate says "this workflow, this
+  ref", not "this build is reproducible". `docs/SUPPLY_CHAIN.md` states where
+  that line is, and why the policy is not a `ClusterPolicy`.
 
 ## Troubleshooting
 

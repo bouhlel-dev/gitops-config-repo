@@ -57,20 +57,34 @@ until_or_timeout "$SYNC_TIMEOUT" "the new tag to reach the Rollout specs" \
   rollout_image_is "$DEV_NAMESPACE" "${HEAD_SHA:0:$IMAGE_TAG_LEN}"
 ui_hint "$DEV_NAMESPACE"
 
-step 6 "canary at 10%, paused for a human"
+step 6 "canary at 10%, paused for a human -- in both environments"
 # The pause has no timeout: the rollout waits here until someone promotes it,
-# which is the only human decision in the whole pipeline.
+# which is the only human decision in the whole pipeline. The base Rollout
+# defines that step once, so both overlays stop, and the script answers both.
 wait_weight "$DEV_NAMESPACE" 10
 printf '  one pod of ten carries the new version:\n'
 kubectl -n "$DEV_NAMESPACE" get pods -l app="$ROLLOUT_NAME" \
   -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.spec.containers[0].image}{"\n"}{end}' |
   awk -v tag=":${HEAD_SHA:0:$IMAGE_TAG_LEN}" '{if (index($2, tag)) print "    NEW " $1; else print "    old " $1}'
 promote "$DEV_NAMESPACE"
+# Prod synced in the same reconciliation cycle and is parked on the same step.
+# Skipping this is how the first version of the script failed: it waited for
+# gitops-demo-prod to report Healthy and timed out after 300s on a release it had
+# never approved.
+wait_weight "$PROD_NAMESPACE" 10
+printf '  two pods of twenty carry it there:\n'
+kubectl -n "$PROD_NAMESPACE" get pods -l app="$ROLLOUT_NAME" \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.spec.containers[0].image}{"\n"}{end}' |
+  awk -v tag=":${HEAD_SHA:0:$IMAGE_TAG_LEN}" '{if (index($2, tag)) print "    NEW " $1; else print "    old " $1}'
+promote "$PROD_NAMESPACE"
 
 step 7 "30% -> 60% -> 100%, each gate measured"
 watch_canary "$DEV_NAMESPACE"
 until_or_timeout "$SYNC_TIMEOUT" "$DEV_APP to settle" app_healthy "$DEV_APP"
-until_or_timeout "$SYNC_TIMEOUT" "$PROD_APP to settle" app_healthy "$PROD_APP"
+# Both canaries walk at the same time and prod is twice the pods at every step,
+# so prod finishing a few seconds behind dev is the normal case, not a stall --
+# give it the canary budget rather than the sync budget.
+until_or_timeout "$CANARY_TIMEOUT" "$PROD_APP to settle" app_healthy "$PROD_APP"
 
 step 8 "every pod in both environments runs the new image"
 for ns in "$DEV_NAMESPACE" "$PROD_NAMESPACE"; do
