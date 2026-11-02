@@ -31,7 +31,7 @@ spec:
         - name: gitops-demo
           # The tag is rewritten by app-repo CI through the images block in
           # kustomization.yaml. Nothing deploys until that promotion happens.
-          image: ghcr.io/OWNER/gitops-demo:placeholder
+          image: ghcr.io/bouhlel-dev/gitops-demo:placeholder
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

@@ -16,8 +16,9 @@ resources:
 # must not be able to drift onto different images. To version the environments
 # apart, delete this block and add one to each overlay instead.
 #
-# OWNER is the GitHub owner that owns the image in GHCR; it is the only string in
-# this repo that has to match a real account name.
+# The image name is the only string in this repo that has to match a real
+# GitHub account: app-repo CI pushes to ghcr.io/<owner>/gitops-demo and then
+# rewrites the newTag below.
 images:
-  - name: ghcr.io/OWNER/gitops-demo
+  - name: ghcr.io/bouhlel-dev/gitops-demo
     newTag: placeholder
