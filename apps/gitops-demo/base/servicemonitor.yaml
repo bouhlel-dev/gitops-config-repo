@@ -1,0 +1,22 @@
+# Scrape config for the app. kube-prometheus-stack only picks up ServiceMonitors
+# owned by its own release unless it is installed with serviceMonitorSelector: {}
+# and serviceMonitorNamespaceSelector: {} -- bootstrap.sh does exactly that.
+#
+# No relabeling: the analysis queries select pods by name, and the labels the
+# operator adds (pod, namespace, service) are exactly the ones worth reading in
+# Grafana during the demo.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gitops-demo
+  labels:
+    app: gitops-demo
+spec:
+  selector:
+    matchLabels:
+      scrape: "true"
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

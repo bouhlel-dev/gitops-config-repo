@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# What the demo runs against. Same build as prod, one tenth the replicas and a
+# looser gate, because a staging environment that is stricter than production
+# teaches you nothing about production.
+namespace: gitops-demo-dev
+
+resources:
+  - ../../base
+
+# The ConfigMap the Rollout reads through envFrom. Keeping the name stable means
+# Argo CD diffs stay readable; the cost is that editing a value does not change
+# the pod template hash, so a ConfigMap-only change needs a rollout restart to
+# land. Image releases do not have that problem.
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: gitops-demo-config
+    literals:
+      - APP_ENV=dev
+
+patches:
+  - target:
+      kind: Ingress
+      name: gitops-demo
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: gitops-demo.local

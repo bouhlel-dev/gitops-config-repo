@@ -1,0 +1,56 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gitops-demo-prod
+
+resources:
+  - ../../base
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: gitops-demo-config
+    literals:
+      - APP_ENV=prod
+
+patches:
+  - target:
+      kind: Ingress
+      name: gitops-demo
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: gitops-demo-prod.local
+
+  # Twenty replicas, so a step is two pods and the 0.5% the gate tolerates is
+  # still a real number of requests rather than rounding.
+  - target:
+      kind: Rollout
+      name: gitops-demo
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 20
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            memory: 256Mi
+
+  # The gate itself. successCondition is a string, so tightening it is a one-line
+  # reviewable change in this file -- and the change is visible in the Argo CD
+  # diff before anything happens to a pod.
+  - target:
+      kind: AnalysisTemplate
+      name: gitops-demo-quality-gate
+    patch: |-
+      - op: replace
+        path: /spec/metrics/0/successCondition
+        value: result[0] >= 0.995
+      - op: replace
+        path: /spec/metrics/1/successCondition
+        value: result[0] < 0.3

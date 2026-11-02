@@ -1,0 +1,36 @@
+# Two Services, one per version. Argo Rollouts owns their selectors: it adds a
+# rollouts-pod-template-hash term for the stable and the canary ReplicaSet, so
+# the same `app` label cannot leak traffic across the two.
+#
+# `scrape: "true"` is what the ServiceMonitor selects on. It must not use the
+# `app` label, because Rollouts rewrites these objects and an unrelated label
+# keeps the scraping contract out of the release mechanics.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitops-demo-stable
+  labels:
+    app: gitops-demo
+    scrape: "true"
+spec:
+  selector:
+    app: gitops-demo
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitops-demo-canary
+  labels:
+    app: gitops-demo
+    scrape: "true"
+spec:
+  selector:
+    app: gitops-demo
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

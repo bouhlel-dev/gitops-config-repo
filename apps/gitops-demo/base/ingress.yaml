@@ -1,0 +1,24 @@
+# The stable Ingress only. Rollouts clones it as gitops-demo-canary, adds
+# nginx.ingress.kubernetes.io/canary: true and sets canary-weight per step, then
+# deletes it once the canary becomes stable. The clone inherits routing rules but
+# not the other annotations, which is why the backend here must be the stable
+# Service -- that pairing is how Rollouts recognises this Ingress.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitops-demo
+  labels:
+    app: gitops-demo
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: placeholder.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gitops-demo-stable
+                port:
+                  name: http

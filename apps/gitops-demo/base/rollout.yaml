@@ -1,0 +1,139 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: gitops-demo
+  labels:
+    app: gitops-demo
+    app.kubernetes.io/name: gitops-demo
+    app.kubernetes.io/part-of: gitops-demo
+spec:
+  # Ten replicas, so every 10% of the canary weight is exactly one pod. That is
+  # what makes the 10/30/60/100 steps observable rather than approximate.
+  replicas: 10
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: gitops-demo
+  template:
+    metadata:
+      labels:
+        app: gitops-demo
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gitops-demo
+          # The tag is rewritten by app-repo CI through the images block in
+          # kustomization.yaml. Nothing deploys until that promotion happens.
+          image: ghcr.io/OWNER/gitops-demo:placeholder
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          # Everything an environment is allowed to decide lives in its own
+          # ConfigMap (APP_ENV, plus the fault knobs if a demo wants to force a
+          # bad release from config instead of from code). The base itself stays
+          # free of environment values.
+          envFrom:
+            - configMapRef:
+                name: gitops-demo-config
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+  strategy:
+    canary:
+      # Rollouts rewrites the selectors of these two Services to pin them to the
+      # stable and canary pod-template hashes; that is what makes the split real.
+      canaryService: gitops-demo-canary
+      stableService: gitops-demo-stable
+      trafficRouting:
+        nginx:
+          # The controller creates a second Ingress (gitops-demo-canary) with the
+          # canary annotations and sets canary-weight from the current step.
+          stableIngress: gitops-demo
+      maxSurge: 1
+      maxUnavailable: 0
+      steps:
+        - setWeight: 10
+        # The only human decision in the pipeline: look at the 10% canary in the
+        # Rollouts dashboard, then promote. Replace with
+        # `pause: {duration: 30s}` for an entirely unattended release.
+        - pause: {}
+
+        # Every gate below passes the same two arguments to the AnalysisTemplate.
+        # They are declared here, not in the template, because podTemplateHashValue
+        # and metadata lookups are only resolved against a Rollout -- a template on
+        # its own has no idea which ReplicaSet is the new one. To declare them once
+        # instead, move this block to spec.strategy.canary.analysis and set
+        # startingStep; the trade-off is a single continuous run rather than three
+        # visible gates.
+        - setWeight: 30
+        - pause: {duration: 30s}
+        - analysis:
+            templates:
+              - templateName: gitops-demo-quality-gate
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+              - name: namespace
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+        - setWeight: 60
+        - pause: {duration: 30s}
+        - analysis:
+            templates:
+              - templateName: gitops-demo-quality-gate
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+              - name: namespace
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+        - setWeight: 100
+        - pause: {duration: 30s}
+        - analysis:
+            templates:
+              - templateName: gitops-demo-quality-gate
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+              - name: namespace
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace

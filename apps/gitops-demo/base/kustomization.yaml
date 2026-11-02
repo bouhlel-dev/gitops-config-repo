@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The base is never applied on its own: it has no namespace, no host and no
+# ConfigMap. Argo CD points at overlays/dev and overlays/prod.
+resources:
+  - rollout.yaml
+  - services.yaml
+  - ingress.yaml
+  - servicemonitor.yaml
+  - analysistemplate.yaml
+
+# The single line app-repo CI rewrites on every release:
+#   kustomize edit set image ghcr.io/<owner>/gitops-demo:<git sha>
+# In the base, not in the overlays, because dev and prod run the same build and
+# must not be able to drift onto different images. To version the environments
+# apart, delete this block and add one to each overlay instead.
+#
+# OWNER is the GitHub owner that owns the image in GHCR; it is the only string in
+# this repo that has to match a real account name.
+images:
+  - name: ghcr.io/OWNER/gitops-demo
+    newTag: placeholder

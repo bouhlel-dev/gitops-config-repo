@@ -1,0 +1,58 @@
+# The quality gate. Two numbers decide whether a release keeps its traffic: the
+# canary's own success rate and its p95 latency.
+#
+# Both queries are filtered to the canary pods. Argo Rollouts injects the
+# pod-template hash of the ReplicaSet it just created, so a query can tell "the
+# new version" from "the version serving everyone else" without a service mesh.
+# Pod names are <rollout>-<hash>-<suffix>, so the hash alone identifies them --
+# but the namespace filter is not optional: dev and prod run in one cluster and
+# are scraped by one Prometheus, and an identical pod template produces an
+# identical hash in both.
+#
+# The two args have no values here on purpose: podTemplateHashValue and metadata
+# lookups are only meaningful next to a Rollout, so the Rollout's analysis steps
+# supply them.
+#
+# An empty result fails, and failureLimit is 0. That is intentional: a canary
+# exporting no requests is not healthy, it is unreachable. It does mean the load
+# generator (scripts/loadgen.py) has to run while a release is in progress.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: gitops-demo-quality-gate
+  labels:
+    app: gitops-demo
+spec:
+  args:
+    - name: canary-hash
+    - name: namespace
+  metrics:
+    - name: success-rate
+      interval: 15s
+      count: 4
+      failureLimit: 0
+      # 99%: one dropped request in a hundred is tolerated. The faulty release
+      # errors on 25% of them.
+      successCondition: result[0] >= 0.99
+      provider:
+        prometheus:
+          address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          query: |
+            sum(rate(http_requests_total{namespace="{{args.namespace}}",pod=~".*-{{args.canary-hash}}-.*",status!~"5.."}[1m]))
+              /
+            sum(rate(http_requests_total{namespace="{{args.namespace}}",pod=~".*-{{args.canary-hash}}-.*"}[1m]))
+    - name: p95-latency
+      interval: 15s
+      count: 4
+      failureLimit: 0
+      # Seconds. The service answers in single-digit milliseconds under this
+      # load; the slow release adds 2s to a quarter of requests, which puts p95
+      # at around 2s.
+      successCondition: result[0] < 0.5
+      provider:
+        prometheus:
+          address: http://prometheus-operated.monitoring.svc.cluster.local:9090
+          query: |
+            histogram_quantile(0.95, sum by (le) (
+              rate(http_request_duration_seconds_bucket{namespace="{{args.namespace}}",pod=~".*-{{args.canary-hash}}-.*"}[1m])
+            ))
