@@ -76,6 +76,10 @@ kubectl -n argocd port-forward svc/argocd-server 8080:80   # admin + the secret 
 kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 ```
 
+[docs/argo-grafana-instructions.md](docs/argo-grafana-instructions.md) is the
+browser runbook: where each password comes from, what to click to walk someone
+through a release, and which ports to fall back to when 8080 and 3000 are taken.
+
 ## Layout
 
 ```
