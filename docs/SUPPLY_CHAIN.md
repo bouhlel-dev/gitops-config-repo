@@ -105,6 +105,62 @@ whose replacement in 3.9.2 (`ghcr.io/kyverno/readiness-checker`) defaults to
 `latest` and publishes only commit-SHA tags — there is no pin to write, so the
 hook is disabled and the documented teardown is `kind delete cluster`.
 
+## Rotating a pin
+
+A digest pin does not move when the thing it names is fixed upstream, and that
+is the whole point: `python:3.12-slim-bookworm@sha256:e697c818…` was a real,
+immutable image that simply grew HIGH-severity findings inside it. So a pin is a
+snapshot with a shelf life, and the Trivy gate is what tells you it expired.
+
+It did, on 2026-11-07. CI run 42392543589 (app-repo `8e39902`) died in the scan
+step after 62 s:
+
+```
+ghcr.io/bouhlel-dev/gitops-demo:8e39902 (debian 12.15)
+Total: 2 (HIGH: 2, CRITICAL: 0)
+│ apt           │ CVE-2026-109518 │ HIGH │ fixed │ 2.6.1 │ 2.6.2 │
+│ libapt-pkg6.0 │                 │      │       │       │       │
+```
+
+Two findings, one CVE: `apt` and the library it is built on, both fixed in
+2.6.2. Nothing was published, no promotion PR was opened, and the cluster never
+saw a diff. That is the gate failing closed, which is the only moment its design
+gets tested.
+
+The fix is a new digest. Not a relaxed flag: `--ignore-unfixed` was already on
+and stays on, and dropping a severity or adding a `.trivyignore` would have
+bought a green run at the cost of the control itself.
+
+```bash
+# 1. what the tag points at now, read from the registry manifest: no download,
+#    no re-hash, so the digest you write is the one Docker would resolve anyway
+docker buildx imagetools inspect python:3.12-slim-bookworm \
+  --format '{{json .Manifest.Digest}}'
+
+# 2. write it in both places, which is what "pinned" costs:
+#      config-repo/versions.env  PYTHON_BASE_IMAGE=   <- CI builds with this
+#      app-repo/Dockerfile       ARG PYTHON_BASE_IMAGE= <- a standalone local build
+
+# 3. prove the new digest carries the fix before spending a CI run on it
+MSYS_NO_PATHCONV=1 docker run --rm --entrypoint /bin/sh \
+  python:3.12-slim-bookworm@<new-digest> \
+  -c "dpkg-query -W -f='\${Package} \${Version}\n' apt libapt-pkg6.0"
+```
+
+Step 3 is the entire verification: `apt 2.6.2` and `libapt-pkg6.0 2.6.2` back
+means the scan has nothing left to block on. `MSYS_NO_PATHCONV=1` is Git Bash's
+problem, not the image's: it rewrites `/bin/sh` into a Windows path on the way to
+the daemon, the same argv mangling that breaks cosign's regex above.
+
+This rotation landed as config-repo `efc40cd` plus app-repo `4820596`, and CI run
+42393126754 was green in 80 s — which is also a fair statement of what the
+control costs.
+
+What this does not rotate: the chart and tool pins in the same file. Those are
+upstream-release decisions rather than security patches, and `bootstrap.sh`
+pulls them by digest too, so a stale one shows up as a missing feature, not a
+CVE.
+
 ## Installing it
 
 ```bash
